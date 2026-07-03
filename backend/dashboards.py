@@ -187,3 +187,205 @@ def build_pm_dashboard(db: Session) -> dict:
         "cra_approved_ict_not": cra_not_ict,
         "monthly_approvals": monthly,
     }
+
+
+# ===========================================================================
+# Scoped dashboards (Coordinator / Contractor / Regional Manager)
+#
+# These share one engine: resolve the caller's scope to a set of site ids,
+# pull the in-scope acceptance rows once, and summarize in Python. Row counts
+# per scope are small (a few provinces / a contractor's assigned sites), so
+# Python aggregation stays clear and correct without elaborate SQL.
+# ===========================================================================
+
+_REJECTED = "rejected"
+
+
+def _as_utc(dt):
+    """SQLite returns naive datetimes; treat naive as UTC so month comparisons
+    work on both SQLite (dev) and Postgres (prod)."""
+    return dt if dt.tzinfo is not None else dt.replace(tzinfo=timezone.utc)
+
+
+def _province_scope_site_ids(db: Session, owner_col, user_id):
+    """Site ids in provinces owned by this user (owner_col is
+    Province.pso_coordinator_id or Province.regional_manager_id)."""
+    prov_ids = select(Province.id).where(owner_col == user_id).scalar_subquery()
+    return select(Site.id).where(Site.province_id.in_(prov_ids), Site.deleted_at.is_(None))
+
+
+def _contractor_scope_site_ids(db: Session, user_id):
+    """Site ids where this contractor holds an active assignment."""
+    return (
+        select(WorkItem.site_id)
+        .join(ContractorAssignment, ContractorAssignment.work_item_id == WorkItem.id)
+        .where(ContractorAssignment.contractor_id == user_id, ContractorAssignment.ended_at.is_(None))
+        .distinct()
+    )
+
+
+def _pct(part, total):
+    return round(part / total * 100, 1) if total else 0.0
+
+
+def _acceptance_summary(db: Session, site_ids_sq):
+    """Pull in-scope acceptance rows once and derive every acceptance block:
+    pending ICT/CRA, full status per province (ICT) and per CRA region (CRA),
+    the two cross-gaps, and month-to-date approvals."""
+    rows = db.execute(
+        select(
+            Site.province_name, Province.cra_region,
+            VillageAcceptance.ict_2g, VillageAcceptance.ict_3g, VillageAcceptance.ict_4g,
+            VillageAcceptance.ict_final, VillageAcceptance.ict_approved_at,
+            VillageAcceptance.cra_2g, VillageAcceptance.cra_3g, VillageAcceptance.cra_4g,
+            VillageAcceptance.cra_final, VillageAcceptance.cra_approved_at,
+        )
+        .select_from(VillageAcceptance)
+        .join(Site, Site.id == VillageAcceptance.site_id)
+        .join(Province, Province.id == Site.province_id)
+        .where(VillageAcceptance.site_id.in_(site_ids_sq))
+    ).all()
+
+    month_start = _month_start()
+
+    def blank():
+        return {"total": 0, "approved": 0, "rejected": 0, "pending": 0}
+
+    ict_by_prov, cra_by_region = {}, {}
+    pending_ict = pending_cra = 0
+    ict_not_cra = cra_not_ict = 0
+    ict_month = cra_month = 0
+    has_ict_total = has_cra_total = 0
+
+    for r in rows:
+        ict_techs = [r.ict_2g, r.ict_3g, r.ict_4g]
+        cra_techs = [r.cra_2g, r.cra_3g, r.cra_4g]
+        has_ict = any(t is not None for t in ict_techs)
+        has_cra = any(t is not None for t in cra_techs)
+
+        if has_ict:
+            has_ict_total += 1
+            bucket = ict_by_prov.setdefault(r.province_name, blank())
+            bucket["total"] += 1
+            if r.ict_final:
+                bucket["approved"] += 1
+            elif _REJECTED in ict_techs:
+                bucket["rejected"] += 1
+                pending_ict += 1
+            else:
+                bucket["pending"] += 1
+                pending_ict += 1
+        if has_cra:
+            has_cra_total += 1
+            bucket = cra_by_region.setdefault(r.cra_region, blank())
+            bucket["total"] += 1
+            if r.cra_final:
+                bucket["approved"] += 1
+            elif _REJECTED in cra_techs:
+                bucket["rejected"] += 1
+                pending_cra += 1
+            else:
+                bucket["pending"] += 1
+                pending_cra += 1
+
+        if r.ict_final and not r.cra_final and has_cra:
+            ict_not_cra += 1
+        if r.cra_final and not r.ict_final and has_ict:
+            cra_not_ict += 1
+        if r.ict_approved_at and _as_utc(r.ict_approved_at) >= month_start:
+            ict_month += 1
+        if r.cra_approved_at and _as_utc(r.cra_approved_at) >= month_start:
+            cra_month += 1
+
+    def rows_out(d, key_name):
+        out = []
+        for name, b in sorted(d.items(), key=lambda kv: kv[1]["total"], reverse=True):
+            out.append({
+                key_name: name, **b,
+                "approved_pct": _pct(b["approved"], b["total"]),
+                "rejected_pct": _pct(b["rejected"], b["total"]),
+                "pending_pct": _pct(b["pending"], b["total"]),
+            })
+        return out
+
+    return {
+        "pending_ict": {"total": pending_ict, "pct_of_scope": _pct(pending_ict, has_ict_total)},
+        "pending_cra": {"total": pending_cra, "pct_of_scope": _pct(pending_cra, has_cra_total)},
+        "ict_status_by_province": rows_out(ict_by_prov, "province"),
+        "cra_status_by_region": rows_out(cra_by_region, "cra_region"),
+        "ict_approved_cra_not": ict_not_cra,
+        "cra_approved_ict_not": cra_not_ict,
+        "monthly_approvals": {"ict": ict_month, "cra": cra_month, "total": ict_month + cra_month},
+    }
+
+
+def build_coordinator_dashboard(db: Session, user: User) -> dict:
+    site_ids = _province_scope_site_ids(db, Province.pso_coordinator_id, user.id).scalar_subquery()
+    provinces = db.execute(
+        select(Province.name).where(Province.pso_coordinator_id == user.id).order_by(Province.name)
+    ).scalars().all()
+    summary = _acceptance_summary(db, site_ids)
+    return {
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "scope": {"role": "DT Coordinator", "who": user.full_name, "provinces": provinces},
+        "sites": db.execute(select(func.count()).select_from(site_ids.element.subquery())).scalar() or 0,
+        "villages": db.execute(
+            select(func.count(Village.id)).where(Village.site_id.in_(site_ids), Village.deleted_at.is_(None))
+        ).scalar() or 0,
+        **summary,
+    }
+
+
+def build_regional_dashboard(db: Session, user: User) -> dict:
+    site_ids = _province_scope_site_ids(db, Province.regional_manager_id, user.id).scalar_subquery()
+    provinces = db.execute(
+        select(Province.name).where(Province.regional_manager_id == user.id).order_by(Province.name)
+    ).scalars().all()
+    summary = _acceptance_summary(db, site_ids)
+    on_air = db.execute(
+        select(func.count(WorkItem.id)).where(WorkItem.is_on_air.is_(True), WorkItem.site_id.in_(site_ids))
+    ).scalar() or 0
+    dt_done = db.execute(
+        select(func.count(WorkItem.id)).where(WorkItem.dt_status == _DONE, WorkItem.site_id.in_(site_ids))
+    ).scalar() or 0
+    return {
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "scope": {"role": "Regional Manager", "who": user.full_name, "provinces": provinces},
+        "totals": {
+            "on_air": on_air, "dt_done": dt_done,
+            "ict_approved": sum(p["approved"] for p in summary["ict_status_by_province"]),
+            "cra_approved": sum(r["approved"] for r in summary["cra_status_by_region"]),
+        },
+        **summary,
+    }
+
+
+def build_contractor_dashboard(db: Session, user: User) -> dict:
+    site_ids = _contractor_scope_site_ids(db, user.id).scalar_subquery()
+    summary = _acceptance_summary(db, site_ids)
+
+    assigned_sites = db.execute(select(func.count()).select_from(site_ids.element.subquery())).scalar() or 0
+    assigned_villages = db.execute(
+        select(func.count(Village.id)).where(Village.site_id.in_(site_ids), Village.deleted_at.is_(None))
+    ).scalar() or 0
+    dt_done_sites = db.execute(
+        select(func.count(func.distinct(WorkItem.site_id)))
+        .where(WorkItem.dt_status == _DONE, WorkItem.site_id.in_(site_ids))
+    ).scalar() or 0
+    dt_done_villages = _villages_on_sites(db, and_(WorkItem.dt_status == _DONE, WorkItem.site_id.in_(site_ids)))
+    remain_sites = db.execute(
+        select(func.count(func.distinct(WorkItem.site_id)))
+        .where(or_(WorkItem.dt_status.in_([_ONGOING, _PROBLEMATIC]), WorkItem.dt_status.is_(None)),
+               WorkItem.site_id.in_(site_ids))
+    ).scalar() or 0
+    remain_villages = _villages_on_sites(
+        db, and_(or_(WorkItem.dt_status.in_([_ONGOING, _PROBLEMATIC]), WorkItem.dt_status.is_(None)),
+                 WorkItem.site_id.in_(site_ids)))
+    return {
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "scope": {"role": "Contractor (DT SC)", "who": user.full_name},
+        "assignment": {"sites": assigned_sites, "villages": assigned_villages},
+        "dt_done": {"sites": dt_done_sites, "villages": dt_done_villages},
+        "dt_remain": {"sites": remain_sites, "villages": remain_villages},
+        **summary,
+    }
