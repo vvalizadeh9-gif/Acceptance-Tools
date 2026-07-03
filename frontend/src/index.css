@@ -1,0 +1,15 @@
+:root{
+  --navy:#0f1b2d; --navy2:#142238;
+  --canvas:#1a2332; --panel:#212d40; --panel2:#26334a;
+  --line:#2f3d54;
+  --ink:#e8edf5; --muted:#93a1b8; --muted2:#5f6f8a;
+  --accent:#2563eb; --accent-dim:#1d4ed8; --accent-soft:rgba(37,99,235,.12);
+  --green:#22c55e; --amber:#f59e0b; --red:#ef4444;
+}
+*{box-sizing:border-box;margin:0;padding:0;}
+body{
+  background:var(--canvas); color:var(--ink);
+  font-family:'Inter','Segoe UI',system-ui,sans-serif;
+  font-size:14px; line-height:1.5;
+}
+input,button{font-family:inherit;font-size:inherit;}
