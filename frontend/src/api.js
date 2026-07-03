@@ -43,6 +43,10 @@ export function getSummary(token) {
   return authed('/summary', token)
 }
 
+export function getPmDashboard(token) {
+  return authed('/dashboard/pm', token)
+}
+
 export async function importCpm(token, fileObj) {
   const form = new FormData()
   form.append('file', fileObj)

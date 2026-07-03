@@ -71,7 +71,7 @@ def _slug(name: str) -> str:
 
 
 def _get_or_create_user(db, full_name: str, role: UserRole, prefix: str, created_log: list) -> User:
-    email = f"{prefix}-{_slug(full_name)}@uso.local"
+    email = f"{prefix}-{_slug(full_name)}@uso.ir"
     user = db.query(User).filter(User.email == email).first()
     if user:
         return user

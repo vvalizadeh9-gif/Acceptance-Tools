@@ -16,6 +16,7 @@ from sqlalchemy import Integer, func, select
 from sqlalchemy.orm import Session
 
 from auth import create_access_token, hash_password, verify_password
+from dashboards import build_pm_dashboard
 from database import get_db
 from deps import get_current_user, require_role
 from import_cpm import import_cpm_bytes
@@ -401,3 +402,13 @@ def summary(db: Session = Depends(get_db), current_user: User = Depends(get_curr
         "total_on_air": total_on_air,
         "total_villages": total_villages,
     }
+
+
+@app.get("/dashboard/pm")
+def pm_dashboard(
+    db: Session = Depends(get_db),
+    _user: User = Depends(require_role("admin", "project_manager")),
+):
+    """Project Manager action center: the seven gaps, KPIs, and month-to-date
+    approval trends. Admin + PM only (PM is read-only across the project)."""
+    return build_pm_dashboard(db)

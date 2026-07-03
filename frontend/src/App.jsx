@@ -4,6 +4,7 @@ import Layout from './Layout.jsx'
 import Dashboard from './Dashboard.jsx'
 import Users from './Users.jsx'
 import Sites from './Sites.jsx'
+import PmDashboard from './PmDashboard.jsx'
 
 export default function App() {
   const [token, setToken] = useState(() => localStorage.getItem('uso_token'))
@@ -24,6 +25,7 @@ export default function App() {
   let content
   if (page === 'users') content = <Users token={token} onLogout={handleLogout} />
   else if (page === 'command') content = <Dashboard token={token} onLogout={handleLogout} />
+  else if (page === 'pm') content = <PmDashboard token={token} onLogout={handleLogout} />
   else if (page === 'sites') content = <Sites token={token} onLogout={handleLogout} />
   else content = <Placeholder page={page} />
 

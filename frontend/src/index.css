@@ -1,15 +1,19 @@
 :root{
-  --navy:#0f1b2d; --navy2:#142238;
-  --canvas:#1a2332; --panel:#212d40; --panel2:#26334a;
-  --line:#2f3d54;
-  --ink:#e8edf5; --muted:#93a1b8; --muted2:#5f6f8a;
-  --accent:#2563eb; --accent-dim:#1d4ed8; --accent-soft:rgba(37,99,235,.12);
-  --green:#22c55e; --amber:#f59e0b; --red:#ef4444;
+  /* Light theme (dark mode intentionally dropped per requirement). */
+  --navy:#f3f5f9; --navy2:#e8ecf3;
+  --canvas:#f7f8fb; --panel:#ffffff; --panel2:#f1f3f8; --panel3:#e7ebf3;
+  --line:#dde2ec; --line-soft:#e8ebf2;
+  --ink:#152238; --muted:#5b6579; --muted2:#8891a3;
+  --accent:#2563eb; --accent-dim:#1d4ed8; --accent-soft:rgba(37,99,235,.08);
+  --green:#16a34a; --green-soft:rgba(22,163,74,.1);
+  --amber:#d97706; --amber-soft:rgba(217,119,6,.1);
+  --red:#dc2626; --red-soft:rgba(220,38,38,.1);
 }
 *{box-sizing:border-box;margin:0;padding:0;}
 body{
   background:var(--canvas); color:var(--ink);
   font-family:'Inter','Segoe UI',system-ui,sans-serif;
   font-size:14px; line-height:1.5;
+  font-variant-numeric:tabular-nums;
 }
 input,button{font-family:inherit;font-size:inherit;}
