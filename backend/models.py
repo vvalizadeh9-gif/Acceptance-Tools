@@ -41,7 +41,10 @@ from enums import (
     AcceptanceStatus,
     ChangeDecision,
     ChangeSeverity,
+    DepreciationStatus,
     DriveTestStatus,
+    DTProblematicCategory,
+    DTProgressStatus,
     HealthCheckStatus,
     ImpedimentEntityType,
     ReviewDecision,
@@ -82,6 +85,41 @@ class User(Base):
             name="chk_user_role_vocab",
         ),
     )
+
+
+# ---------------------------------------------------------------------------
+# Geography — the province reference table that all scoping joins through
+# ---------------------------------------------------------------------------
+
+class Province(Base):
+    """One row per province (31 total). The single backbone every geographic
+    breakdown and scope check joins through, because the three groupings the
+    business uses — operational Regional Manager, PSO Coordinator, and CRA
+    Region — are three *independent* partitions of the same provinces, and
+    only the province itself is common to all of them.
+
+    The primary key is deliberately the SAME deterministic UUID the CPM
+    importer already derives from the province name (uuid5 over
+    "province::<name>"), so existing Site.province_id values point straight
+    at these rows with no importer change.
+
+    - cra_region: fixed regulatory geography (one of 9 CRA regions).
+    - operational_region_name: the CPM «منطقه» value, kept for reference/display.
+    - regional_manager_id / pso_coordinator_id: current owners, editable by
+      an Admin (people change roles). Coordinator scope cuts ACROSS regional
+      managers, which is exactly why scope can't be a region string and has
+      to live here per-province.
+    """
+    __tablename__ = "province"
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    name: Mapped[str] = mapped_column(String(100), nullable=False, unique=True)
+    cra_region: Mapped[str] = mapped_column(String(50), nullable=False)
+    operational_region_name: Mapped[str | None] = mapped_column(String(100))
+    regional_manager_id: Mapped[uuid.UUID | None] = mapped_column(Uuid, ForeignKey("app_user.id", ondelete="SET NULL"))
+    pso_coordinator_id: Mapped[uuid.UUID | None] = mapped_column(Uuid, ForeignKey("app_user.id", ondelete="SET NULL"))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
 
 
 # ---------------------------------------------------------------------------
@@ -153,6 +191,17 @@ class WorkItem(Base):
     # Site ID + Site Type combinations, e.g. "T2120-New Site".
     cpm_raw_status: Mapped[str | None] = mapped_column(String(100))
     is_on_air: Mapped[bool] = mapped_column(default=False, nullable=False)
+    # Drive-test progress at the site grain (the DT dashboards read this).
+    # NULL until known; seeded from the one-time CPM import, app-managed after.
+    dt_status: Mapped[DTProgressStatus | None] = mapped_column(String(20))
+    # Only meaningful when dt_status == PROBLEMATIC.
+    dt_problematic_category: Mapped[DTProblematicCategory | None] = mapped_column(String(30))
+    # Historical DT subcontractor name from CPM (free text). Going forward the
+    # authoritative assignment lives in ContractorAssignment; this is the
+    # legacy record of who ran the drive test before the app existed.
+    dt_subcontractor_name: Mapped[str | None] = mapped_column(String(255))
+    # Site-grain half of "keep both" depreciation tracking.
+    depreciation_status: Mapped[DepreciationStatus | None] = mapped_column(String(30))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
     deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
@@ -244,22 +293,74 @@ class DriveTestReview(Base):
 # ---------------------------------------------------------------------------
 
 class VillageAcceptance(Base):
+    """One row per village (Site + Village), holding both ICT and CRA
+    acceptance. Restructured from the earlier one-row-per-technology layout:
+    the CPM file carries 2G/3G/4G statuses plus a single Final/Comment/letter
+    set per village, so a wide per-village row maps 1:1 to the source and is
+    far easier to read when debugging.
+
+    Per-technology status columns (ict_2g/3g/4g, cra_2g/3g/4g):
+      * NULL  = that technology was not requested for this village.
+      * otherwise an AcceptanceStatus (not_submitted / submitted / approved /
+        rejected).
+
+    Final columns (ict_final, cra_final) are a stored, cached boolean —
+    recomputed by recompute_finals() whenever a per-tech status changes.
+    Final is True when at least one technology is requested AND every
+    requested (non-NULL) technology is APPROVED. Stored (not purely derived)
+    so dashboard queries can filter on it directly, mirroring the existing
+    WorkItem.status denormalized-cache pattern.
+    """
     __tablename__ = "village_acceptance"
 
     id: Mapped[uuid.UUID] = _uuid_pk()
     site_id: Mapped[uuid.UUID] = mapped_column(Uuid, ForeignKey("site.id", ondelete="RESTRICT"), nullable=False)
     village_id: Mapped[str] = mapped_column(String(50), nullable=False)
-    technology: Mapped[str] = mapped_column(String(20), nullable=False)
-    ict_status: Mapped[AcceptanceStatus] = mapped_column(String(20), default=AcceptanceStatus.NOT_SUBMITTED, nullable=False)
-    cra_status: Mapped[AcceptanceStatus] = mapped_column(String(20), default=AcceptanceStatus.NOT_SUBMITTED, nullable=False)
+
+    # --- ICT ---
+    ict_2g: Mapped[AcceptanceStatus | None] = mapped_column(String(20))
+    ict_3g: Mapped[AcceptanceStatus | None] = mapped_column(String(20))
+    ict_4g: Mapped[AcceptanceStatus | None] = mapped_column(String(20))
+    ict_final: Mapped[bool] = mapped_column(default=False, nullable=False)
+    ict_comment: Mapped[str | None] = mapped_column(Text)
+    ict_letter_number: Mapped[str | None] = mapped_column(String(100))
+    ict_letter_date: Mapped[date | None] = mapped_column(Date)
+    ict_approved_by: Mapped[uuid.UUID | None] = mapped_column(Uuid, ForeignKey("app_user.id", ondelete="SET NULL"))
+    ict_approved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+    # --- CRA ---
+    cra_2g: Mapped[AcceptanceStatus | None] = mapped_column(String(20))
+    cra_3g: Mapped[AcceptanceStatus | None] = mapped_column(String(20))
+    cra_4g: Mapped[AcceptanceStatus | None] = mapped_column(String(20))
+    cra_final: Mapped[bool] = mapped_column(default=False, nullable=False)
+    cra_comment: Mapped[str | None] = mapped_column(Text)
+    cra_letter_number: Mapped[str | None] = mapped_column(String(100))
+    cra_letter_date: Mapped[date | None] = mapped_column(Date)
+    cra_approved_by: Mapped[uuid.UUID | None] = mapped_column(Uuid, ForeignKey("app_user.id", ondelete="SET NULL"))
+    cra_approved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+    # Village-grain half of "keep both" depreciation tracking.
+    depreciation_status: Mapped[DepreciationStatus | None] = mapped_column(String(30))
+
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
 
     letter_links: Mapped[list["LetterVillageMapping"]] = relationship(back_populates="village_acceptance")
 
     __table_args__ = (
-        UniqueConstraint("site_id", "village_id", "technology", name="uq_acceptance_composite_key"),
+        UniqueConstraint("site_id", "village_id", name="uq_acceptance_site_village"),
     )
+
+    def recompute_finals(self) -> None:
+        """Refresh the cached ict_final / cra_final flags from the per-tech
+        statuses. Call after any per-tech status change (and the CPM import
+        calls it after loading)."""
+        def _final(statuses: list[AcceptanceStatus | None]) -> bool:
+            requested = [s for s in statuses if s is not None]
+            return bool(requested) and all(s == AcceptanceStatus.APPROVED for s in requested)
+
+        self.ict_final = _final([self.ict_2g, self.ict_3g, self.ict_4g])
+        self.cra_final = _final([self.cra_2g, self.cra_3g, self.cra_4g])
 
 
 class Letter(Base):
@@ -358,3 +459,43 @@ class PendingChange(Base):
     decided_by: Mapped[uuid.UUID | None] = mapped_column(Uuid, ForeignKey("app_user.id"))
     decided_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+# ---------------------------------------------------------------------------
+# Monthly snapshots — the baseline every "+/- vs last month" delta compares to
+# ---------------------------------------------------------------------------
+
+class MonthlyMetricSnapshot(Base):
+    """A point-in-time count captured at the start of each month, so the
+    dashboards can show '+N / -N vs last month' for state counts (pending
+    DT/ICT/CRA, on-air, etc.). The delta shown = live count minus this
+    month's opening snapshot.
+
+    Starts accumulating the day it's switched on — there is no historical
+    back-fill, so the first month's deltas grow from zero, exactly as
+    specified. (Event-based figures like 'approvals this month per person'
+    do NOT use this table; they come straight from approved_at dates and are
+    always exact.)
+
+    One row per (period, scope_type, scope_key, metric):
+      * period      — 'YYYY-MM'
+      * scope_type  — global | province | coordinator | regional_manager |
+                      cra_region | contractor
+      * scope_key   — the province name / user id / CRA region name / '' for
+                      global
+      * metric      — pending_dt | pending_ict | pending_cra | on_air |
+                      dt_done | ict_approved | cra_approved | ...
+    """
+    __tablename__ = "monthly_metric_snapshot"
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    period: Mapped[str] = mapped_column(String(7), nullable=False)
+    scope_type: Mapped[str] = mapped_column(String(30), nullable=False)
+    scope_key: Mapped[str] = mapped_column(String(120), nullable=False, default="")
+    metric: Mapped[str] = mapped_column(String(40), nullable=False)
+    value: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    captured_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+    __table_args__ = (
+        UniqueConstraint("period", "scope_type", "scope_key", "metric", name="uq_snapshot_period_scope_metric"),
+    )

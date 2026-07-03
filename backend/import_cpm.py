@@ -32,6 +32,7 @@ import pandas as pd
 from sqlalchemy import select, update
 from sqlalchemy.orm import Session
 
+from enums import AcceptanceStatus
 from models import Site, Village, VillageAcceptance, WorkItem
 
 # ---- Exact column names from the CPM file ----
@@ -58,6 +59,9 @@ TECH_SPLIT = {
     "3G4G": ["UMTS", "LTE"], "3G/4G": ["UMTS", "LTE"],
     "MW": [],  # microwave transmission — not a cellular acceptance technology
 }
+
+# Maps a cellular technology to the per-generation acceptance column suffix.
+TECH_TO_GEN = {"GSM": "2g", "UMTS": "3g", "LTE": "4g"}
 
 
 def _region_uuid(label: str) -> uuid.UUID:
@@ -122,15 +126,24 @@ def import_cpm_bytes(data: bytes, db: Session) -> dict:
         (row.site_id, row.site_type): (row.id, row.is_on_air)
         for row in db.execute(select(WorkItem.id, WorkItem.site_id, WorkItem.site_type, WorkItem.is_on_air))
     }
-    existing_acceptance: set[tuple] = {
-        (row.site_id, row.village_id, row.technology)
-        for row in db.execute(select(VillageAcceptance.site_id, VillageAcceptance.village_id, VillageAcceptance.technology))
+    # Acceptance is now one row per (site, village). Preload the per-tech
+    # request flags so re-import can mark newly-requested technologies without
+    # hydrating full ORM objects.
+    existing_acceptance: dict[tuple, dict] = {
+        (row.site_id, row.village_id): {"id": row.id, "2g": row.ict_2g, "3g": row.ict_3g, "4g": row.ict_4g}
+        for row in db.execute(select(
+            VillageAcceptance.id, VillageAcceptance.site_id, VillageAcceptance.village_id,
+            VillageAcceptance.ict_2g, VillageAcceptance.ict_3g, VillageAcceptance.ict_4g,
+        ))
     }
 
     new_sites: dict[str, Site] = {}
     new_villages: dict[tuple, Village] = {}
     new_workitems: dict[tuple, WorkItem] = {}
     new_acceptance: dict[tuple, VillageAcceptance] = {}
+    # Existing acceptance rows that gained a newly-requested technology:
+    # {tech_attr: {village_acceptance_id, ...}} -> flipped NULL -> not_submitted.
+    acceptance_tech_to_flip: dict[str, set] = {"2g": set(), "3g": set(), "4g": set()}
     villages_to_flip_on: set = set()   # existing Village.id needing is_on_air -> True
     workitems_to_flip_on: set = set()  # existing WorkItem.id needing is_on_air -> True
 
@@ -217,16 +230,36 @@ def import_cpm_bytes(data: bytes, db: Session) -> dict:
                 new_villages[vkey] = new_v
                 counts["villages"] += 1
 
-            # --- Acceptance rows, one per requested cellular technology ---
+            # --- Acceptance: one row per (site, village); mark requested
+            # technologies as not_submitted (NULL means "not requested").
+            # The 6 new CPM acceptance columns (ICT/CRA 2G/3G/4G, letters,
+            # depreciation) are parsed once the updated CPM file arrives; for
+            # now we only record which technologies were requested. ---
             tech_label = _clean(r.get(COL_TECH))
-            for tech in TECH_SPLIT.get(tech_label, []):
-                akey = (site_uuid, vcode, tech)
-                if akey in existing_acceptance or akey in new_acceptance:
-                    continue
-                new_acceptance[akey] = VillageAcceptance(
-                    id=uuid.uuid4(), site_id=site_uuid, village_id=vcode, technology=tech,
-                )
-                counts["acceptance"] += 1
+            requested_gens = {TECH_TO_GEN[t] for t in TECH_SPLIT.get(tech_label, []) if t in TECH_TO_GEN}
+            if requested_gens:
+                akey = (site_uuid, vcode)
+                existing = existing_acceptance.get(akey)
+                if existing is not None:
+                    # Flip any newly-requested generation from NULL -> not_submitted.
+                    for gen in requested_gens:
+                        if existing[gen] is None:
+                            acceptance_tech_to_flip[gen].add(existing["id"])
+                            existing[gen] = AcceptanceStatus.NOT_SUBMITTED
+                else:
+                    va = new_acceptance.get(akey)
+                    if va is None:
+                        va = VillageAcceptance(id=uuid.uuid4(), site_id=site_uuid, village_id=vcode)
+                        new_acceptance[akey] = va
+                        counts["acceptance"] += 1
+                    for gen in requested_gens:
+                        setattr(va, f"ict_{gen}", AcceptanceStatus.NOT_SUBMITTED)
+                        setattr(va, f"cra_{gen}", AcceptanceStatus.NOT_SUBMITTED)
+
+    # New acceptance rows: refresh their cached Final flags (all False here
+    # since nothing is approved yet, but keeps the invariant honest).
+    for va in new_acceptance.values():
+        va.recompute_finals()
 
     # --- Bulk writes: a handful of statements, not thousands ---
     db.add_all(new_sites.values())
@@ -237,6 +270,11 @@ def import_cpm_bytes(data: bytes, db: Session) -> dict:
         db.execute(update(WorkItem).where(WorkItem.id.in_(workitems_to_flip_on)).values(is_on_air=True))
     if villages_to_flip_on:
         db.execute(update(Village).where(Village.id.in_(villages_to_flip_on)).values(is_on_air=True))
+    for gen, ids in acceptance_tech_to_flip.items():
+        if ids:
+            db.execute(update(VillageAcceptance).where(VillageAcceptance.id.in_(ids)).values(
+                **{f"ict_{gen}": AcceptanceStatus.NOT_SUBMITTED, f"cra_{gen}": AcceptanceStatus.NOT_SUBMITTED}
+            ))
     db.commit()
 
     return counts

@@ -114,3 +114,33 @@ class ChangeDecision(str, enum.Enum):
     IGNORED = "ignored"
     FLAGGED = "flagged"
     PENDING = "pending"
+
+
+class DTProgressStatus(str, enum.Enum):
+    """Current drive-test progress for a Work Item (Site + Site Type). This
+    is the site-grain status the DT dashboards read — distinct from the
+    detailed DriveTest submission/review workflow, which stays in its own
+    table. Seeded historically from the one-time CPM import, app-managed
+    afterwards."""
+    DONE = "done"
+    ONGOING = "ongoing"
+    PROBLEMATIC = "problematic"
+
+
+class DTProblematicCategory(str, enum.Enum):
+    """Why a Work Item's drive test is problematic. Only meaningful when
+    dt_status == PROBLEMATIC. Five categories (MS = Managed Service)."""
+    ON_SITE_ISSUE = "on_site_issue"
+    TEMP_POWER = "temp_power"
+    MS_RESPONSIBILITY = "ms_responsibility"
+    NWG_RESPONSIBILITY = "nwg_responsibility"
+    OTHER = "other"
+
+
+class DepreciationStatus(str, enum.Enum):
+    """Depreciation state, tracked at BOTH grains (Site+SiteType on the Work
+    Item, and Site+Village on the acceptance row) per the requirement to
+    'keep both'."""
+    DEPRECIATED = "depreciated"
+    WAITING = "waiting_for_depreciation"
+    REMAIN = "remain"
