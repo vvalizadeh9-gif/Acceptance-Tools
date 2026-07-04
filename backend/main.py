@@ -16,7 +16,7 @@ from sqlalchemy import Integer, func, select
 from sqlalchemy.orm import Session
 
 from auth import create_access_token, hash_password, verify_password
-from dashboards import build_pm_dashboard
+from dashboards import build_pm_dashboard, build_project_delivery_dashboard
 from database import get_db
 from deps import get_current_user, require_role
 from import_cpm import import_cpm_bytes
@@ -412,3 +412,15 @@ def pm_dashboard(
     """Project Manager action center: the seven gaps, KPIs, and month-to-date
     approval trends. Admin + PM only (PM is read-only across the project)."""
     return build_pm_dashboard(db)
+
+
+@app.get("/dashboard/delivery")
+def project_delivery_dashboard(
+    db: Session = Depends(get_db),
+    _user: User = Depends(require_role("admin", "project_manager")),
+):
+    """Project Delivery tab: on-air/DT/remained KPIs with %/trend, ongoing
+    and problematic breakdowns (per subcontractor / per category, each with
+    a per-province drill-down), and yearly/monthly/per-subcontractor DT
+    delivery charts. Admin + PM only."""
+    return build_project_delivery_dashboard(db)

@@ -47,6 +47,10 @@ export function getPmDashboard(token) {
   return authed('/dashboard/pm', token)
 }
 
+export function getProjectDeliveryDashboard(token) {
+  return authed('/dashboard/delivery', token)
+}
+
 export async function importCpm(token, fileObj) {
   const form = new FormData()
   form.append('file', fileObj)

@@ -18,6 +18,7 @@ export default function Layout({ token, onLogout, active, onNavigate, children }
   const nav = [
     { key: 'command', label: 'Command Center', roles: 'all' },
     { key: 'pm', label: 'PM Dashboard', roles: ['admin', 'project_manager'] },
+    { key: 'delivery', label: 'Project Delivery', roles: ['admin', 'project_manager'] },
     { key: 'sites', label: 'Sites & Villages', roles: 'all' },
     { key: 'drivetests', label: 'Drive Tests', roles: 'all' },
     { key: 'acceptance', label: 'Acceptance', roles: 'all' },

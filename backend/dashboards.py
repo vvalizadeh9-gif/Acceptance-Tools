@@ -12,9 +12,9 @@ Definitions (shared across roles):
   * "Final" is the stored cached flag (all requested techs approved).
 """
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
-from sqlalchemy import Integer, and_, func, or_, select
+from sqlalchemy import Integer, and_, extract, func, or_, select
 from sqlalchemy.orm import Session
 
 from models import (
@@ -388,4 +388,136 @@ def build_contractor_dashboard(db: Session, user: User) -> dict:
         "dt_done": {"sites": dt_done_sites, "villages": dt_done_villages},
         "dt_remain": {"sites": remain_sites, "villages": remain_villages},
         **summary,
+    }
+
+
+# ===========================================================================
+# Project Delivery Tab (PM/Admin) — site-grain delivery progress: KPIs with
+# %/trend, ongoing/problematic breakdowns, and DT-delivery charts.
+#
+# IMPORTANT data-quality note: dt_date (the CPM "DT Date" column) is only
+# populated for a fraction of completed drive tests in the real export
+# (~37% of "Done" work items in the sample file) — it's sparse historical
+# data, not guaranteed on every row. So:
+#   * KPI counts (on-air / DT done / remained) use dt_status, which IS
+#     reliable on every row — these are exact.
+#   * The yearly/monthly delivery CHARTS can only bucket work items that
+#     happen to have a dt_date, so their bars necessarily sum to less than
+#     the "Total Drive Test" KPI. This is a real data gap, not a bug — it's
+#     surfaced via `dt_delivery_dated_count` so the UI can caption it.
+#   * The per-subcontractor TOTAL (no date needed) uses dt_status == done
+#     directly, so it IS the full, accurate count.
+# ===========================================================================
+
+def build_project_delivery_dashboard(db: Session) -> dict:
+    now = datetime.now(timezone.utc)
+    today = now.date()
+
+    # Same grain as the KPI counts themselves (Work Item = Site+SiteType,
+    # "Index 1") — using distinct Site count here would mismatch grain for
+    # any site with 2+ site types and could push a percentage over 100%.
+    total_work_items = db.execute(select(func.count(WorkItem.id))).scalar() or 0
+    on_air_sites = db.execute(select(func.count(WorkItem.id)).where(WorkItem.is_on_air.is_(True))).scalar() or 0
+    dt_done_sites = db.execute(select(func.count(WorkItem.id)).where(WorkItem.dt_status == _DONE)).scalar() or 0
+    remained_sites = db.execute(
+        select(func.count(WorkItem.id)).where(WorkItem.dt_status.in_([_ONGOING, _PROBLEMATIC]))
+    ).scalar() or 0
+
+    def delta(metric, live):
+        base = _kpi_delta(db, metric)
+        return None if base is None else live - base
+
+    # --- Ongoing sites per subcontractor, each with a per-province breakdown ---
+    ongoing_rows = db.execute(
+        select(func.coalesce(WorkItem.dt_subcontractor_name, "Unassigned"), Site.province_name, func.count(WorkItem.id))
+        .join(Site, Site.id == WorkItem.site_id)
+        .where(WorkItem.dt_status == _ONGOING)
+        .group_by(func.coalesce(WorkItem.dt_subcontractor_name, "Unassigned"), Site.province_name)
+    ).all()
+    by_sc: dict[str, dict] = {}
+    for sc, prov, cnt in ongoing_rows:
+        entry = by_sc.setdefault(sc, {"subcontractor": sc, "count": 0, "by_province": []})
+        entry["count"] += cnt
+        entry["by_province"].append({"province": prov, "count": cnt})
+    ongoing_by_subcontractor = sorted(by_sc.values(), key=lambda r: r["count"], reverse=True)
+    for entry in ongoing_by_subcontractor:
+        entry["by_province"].sort(key=lambda r: r["count"], reverse=True)
+
+    # --- Problematic sites per category, each with a per-province breakdown ---
+    prob_rows = db.execute(
+        select(WorkItem.dt_problematic_category, Site.province_name, func.count(WorkItem.id))
+        .join(Site, Site.id == WorkItem.site_id)
+        .where(WorkItem.dt_status == _PROBLEMATIC, WorkItem.dt_problematic_category.isnot(None))
+        .group_by(WorkItem.dt_problematic_category, Site.province_name)
+    ).all()
+    by_cat: dict[str, dict] = {}
+    for cat, prov, cnt in prob_rows:
+        entry = by_cat.setdefault(cat, {"category": cat, "count": 0, "by_province": []})
+        entry["count"] += cnt
+        entry["by_province"].append({"province": prov, "count": cnt})
+    problematic_by_category = sorted(by_cat.values(), key=lambda r: r["count"], reverse=True)
+    for entry in problematic_by_category:
+        entry["by_province"].sort(key=lambda r: r["count"], reverse=True)
+
+    # --- Yearly delivery chart (only work items with a recorded dt_date) ---
+    dated_total = db.execute(select(func.count(WorkItem.id)).where(WorkItem.dt_date.isnot(None))).scalar() or 0
+    yearly = db.execute(
+        select(extract("year", WorkItem.dt_date).label("y"), func.count(WorkItem.id))
+        .where(WorkItem.dt_date.isnot(None))
+        .group_by("y").order_by("y")
+    ).all()
+    yearly_delivery = [{"year": int(y), "count": c} for y, c in yearly]
+
+    # --- Monthly delivery, current calendar year (12 months, zero-filled) ---
+    monthly = dict(db.execute(
+        select(extract("month", WorkItem.dt_date).label("m"), func.count(WorkItem.id))
+        .where(WorkItem.dt_date.isnot(None), extract("year", WorkItem.dt_date) == today.year)
+        .group_by("m")
+    ).all())
+    monthly_this_year = [{"month": m, "count": int(monthly.get(m) or monthly.get(float(m), 0))} for m in range(1, 13)]
+
+    # --- Current month KPI + vs last month (both derived directly from
+    # dt_date, no snapshot table needed — these are dated historical events). ---
+    this_month_count = db.execute(
+        select(func.count(WorkItem.id)).where(
+            WorkItem.dt_date.isnot(None),
+            extract("year", WorkItem.dt_date) == today.year,
+            extract("month", WorkItem.dt_date) == today.month,
+        )
+    ).scalar() or 0
+    last_month_date = today.replace(day=1) - timedelta(days=1)
+    last_month_count = db.execute(
+        select(func.count(WorkItem.id)).where(
+            WorkItem.dt_date.isnot(None),
+            extract("year", WorkItem.dt_date) == last_month_date.year,
+            extract("month", WorkItem.dt_date) == last_month_date.month,
+        )
+    ).scalar() or 0
+
+    # --- Per-subcontractor total delivered (no date needed -> exact) ---
+    by_sc_total = db.execute(
+        select(func.coalesce(WorkItem.dt_subcontractor_name, "Unassigned"), func.count(WorkItem.id))
+        .where(WorkItem.dt_status == _DONE)
+        .group_by(func.coalesce(WorkItem.dt_subcontractor_name, "Unassigned"))
+        .order_by(func.count(WorkItem.id).desc())
+    ).all()
+
+    return {
+        "generated_at": now.isoformat(),
+        "kpis": {
+            "on_air": {"count": on_air_sites, "pct_of_total": _pct(on_air_sites, total_work_items),
+                       "delta": delta("on_air", on_air_sites)},
+            "drive_test": {"count": dt_done_sites, "pct_of_on_air": _pct(dt_done_sites, on_air_sites),
+                           "delta": delta("dt_done", dt_done_sites)},
+            "remained": {"count": remained_sites, "pct_of_on_air": _pct(remained_sites, on_air_sites),
+                         "delta": delta("remained", remained_sites)},
+        },
+        "ongoing_by_subcontractor": ongoing_by_subcontractor,
+        "problematic_by_category": problematic_by_category,
+        "dt_delivery_dated_count": dated_total,
+        "yearly_delivery": yearly_delivery,
+        "monthly_this_year": monthly_this_year,
+        "current_month": {"year": today.year, "month": today.month, "count": this_month_count,
+                          "delta": this_month_count - last_month_count},
+        "by_subcontractor_total": [{"subcontractor": sc, "count": c} for sc, c in by_sc_total],
     }
