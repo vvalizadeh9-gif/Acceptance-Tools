@@ -264,3 +264,26 @@ class ImpedimentRead(ORMBase):
 
 class PendingChangeResolve(BaseModel):
     decision: str = Field(pattern="^(accepted|ignored|flagged)$")
+
+
+# ---------------------------------------------------------------------------
+# Province — geographic backbone; Admin assigns Regional Manager / PSO
+# Coordinator ownership per province here (User Management).
+# ---------------------------------------------------------------------------
+
+class ProvinceRead(BaseModel):
+    id: uuid.UUID
+    name: str
+    cra_region: str
+    regional_manager_id: Optional[uuid.UUID] = None
+    regional_manager_name: Optional[str] = None
+    pso_coordinator_id: Optional[uuid.UUID] = None
+    pso_coordinator_name: Optional[str] = None
+
+
+class ProvinceUpdate(BaseModel):
+    """Full-replace semantics: the caller always sends both fields (the
+    Province Assignments table always has the complete current state loaded
+    client-side), so there's no ambiguity between 'omitted' and 'cleared'."""
+    regional_manager_id: Optional[uuid.UUID] = None
+    pso_coordinator_id: Optional[uuid.UUID] = None

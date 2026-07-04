@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { listUsers, createUser, updateUser, getSiteFilterOptions } from './api.js'
+import { listUsers, createUser, updateUser, getSiteFilterOptions, listProvinces, updateProvince } from './api.js'
 import { ROLE_LABELS } from './Layout.jsx'
 
 const ROLES = ['admin', 'project_manager', 'dt_coordinator', 'field_subcontractor', 'regional_manager', 'viewer']
@@ -54,8 +54,8 @@ export default function Users({ token, onLogout }) {
                 <td style={td}>
                   <span style={{
                     fontSize: 11.5, padding: '3px 9px', borderRadius: 12,
-                    background: u.is_active ? 'rgba(34,197,94,.15)' : 'rgba(239,68,68,.15)',
-                    color: u.is_active ? '#4ade80' : '#f87171',
+                    background: u.is_active ? 'var(--green-soft)' : 'var(--red-soft)',
+                    color: u.is_active ? 'var(--green)' : 'var(--red)',
                   }}>
                     {u.is_active ? 'Active' : 'Disabled'}
                   </span>
@@ -68,6 +68,8 @@ export default function Users({ token, onLogout }) {
           </tbody>
         </table>
       </div>
+
+      <ProvinceAssignments token={token} users={users} onLogout={onLogout} />
 
       {showCreate && (
         <UserForm
@@ -83,6 +85,98 @@ export default function Users({ token, onLogout }) {
           onSaved={() => { setEditing(null); load() }}
         />
       )}
+    </div>
+  )
+}
+
+function ProvinceAssignments({ token, users, onLogout }) {
+  const [provinces, setProvinces] = useState(null)
+  const [error, setError] = useState('')
+  const [savingId, setSavingId] = useState(null)
+
+  function load() {
+    listProvinces(token)
+      .then(setProvinces)
+      .catch(err => { if (err.message === 'SESSION_EXPIRED') onLogout(); else setError(err.message) })
+  }
+  useEffect(load, [token])
+
+  const regionalManagers = (users || []).filter(u => u.role === 'regional_manager' && u.is_active)
+  const coordinators = (users || []).filter(u => u.role === 'dt_coordinator' && u.is_active)
+
+  async function handleChange(province, field, value) {
+    const payload = {
+      regional_manager_id: province.regional_manager_id,
+      pso_coordinator_id: province.pso_coordinator_id,
+      [field]: value || null,
+    }
+    setSavingId(province.id)
+    setError('')
+    try {
+      const updated = await updateProvince(token, province.id, payload)
+      setProvinces(prev => prev.map(p => p.id === province.id ? updated : p))
+    } catch (err) {
+      if (err.message === 'SESSION_EXPIRED') { onLogout(); return }
+      setError(err.message)
+    } finally {
+      setSavingId(null)
+    }
+  }
+
+  return (
+    <div style={{ marginTop: 28 }}>
+      <div style={{ marginBottom: 14 }}>
+        <h2 style={{ fontSize: 16, fontWeight: 700 }}>Province Assignments</h2>
+        <div style={{ color: 'var(--muted)', fontSize: 12.5, marginTop: 3 }}>
+          Which Regional Manager and PSO Coordinator owns each province — this is what scopes their dashboards. Changes apply immediately.
+        </div>
+      </div>
+
+      {error && <div style={errBox}>{error}</div>}
+
+      <div style={{ background: 'var(--panel)', border: '1px solid var(--line)', borderRadius: 12, overflow: 'hidden' }}>
+        <div style={{ maxHeight: 480, overflowY: 'auto' }}>
+          <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
+            <thead>
+              <tr style={{ background: 'var(--panel2)' }}>
+                <Th>Province</Th><Th>CRA Region</Th><Th>Regional Manager</Th><Th>PSO Coordinator</Th>
+              </tr>
+            </thead>
+            <tbody>
+              {provinces === null ? (
+                <tr><td colSpan={4} style={{ padding: 20, color: 'var(--muted)' }}>Loading…</td></tr>
+              ) : provinces.map(p => (
+                <tr key={p.id} style={{ borderTop: '1px solid var(--line)', opacity: savingId === p.id ? 0.6 : 1 }}>
+                  <td style={td}>{p.name}</td>
+                  <td style={{ ...td, color: 'var(--muted)' }}>{p.cra_region}</td>
+                  <td style={td}>
+                    <select
+                      value={p.regional_manager_id || ''}
+                      onChange={e => handleChange(p, 'regional_manager_id', e.target.value)}
+                      disabled={savingId === p.id}
+                      style={selectInput}
+                    >
+                      <option value="">— Unassigned —</option>
+                      {regionalManagers.map(u => <option key={u.id} value={u.id}>{u.full_name}</option>)}
+                    </select>
+                  </td>
+                  <td style={td}>
+                    <select
+                      value={p.pso_coordinator_id || ''}
+                      onChange={e => handleChange(p, 'pso_coordinator_id', e.target.value)}
+                      disabled={savingId === p.id}
+                      style={selectInput}
+                    >
+                      <option value="">— Unassigned —</option>
+                      {coordinators.map(u => <option key={u.id} value={u.id}>{u.full_name}</option>)}
+                    </select>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </div>
     </div>
   )
 }
@@ -154,6 +248,11 @@ function UserForm({ token, mode, user, onClose, onSaved }) {
             </select>
           </Field>
         )}
+        {(role === 'regional_manager' || role === 'dt_coordinator') && (
+          <div style={hint}>
+            Which provinces this person covers is set below in <strong>Province Assignments</strong>, not here — one person can cover several provinces.
+          </div>
+        )}
         <Field label={mode === 'create' ? 'Password' : 'New password (leave blank to keep current)'}>
           <input type="password" value={password} onChange={e => setPassword(e.target.value)} style={input} placeholder="At least 8 characters" />
         </Field>
@@ -196,6 +295,8 @@ const primaryBtn = { padding: '9px 18px', borderRadius: 8, border: 'none', backg
 const ghostBtn = { padding: '9px 18px', borderRadius: 8, border: '1px solid var(--line)', background: 'transparent', color: 'var(--muted)', fontSize: 13, cursor: 'pointer' }
 const smallBtn = { padding: '5px 12px', borderRadius: 7, border: '1px solid var(--line)', background: 'transparent', color: 'var(--ink)', fontSize: 12, cursor: 'pointer' }
 const input = { width: '100%', padding: '9px 12px', borderRadius: 8, border: '1px solid var(--line)', background: 'var(--panel2)', color: 'var(--ink)', outline: 'none' }
-const errBox = { padding: '10px 14px', borderRadius: 8, background: 'rgba(239,68,68,.1)', border: '1px solid rgba(239,68,68,.35)', color: '#fca5a5', fontSize: 12.5, marginBottom: 16 }
-const overlay = { position: 'fixed', inset: 0, background: 'rgba(0,0,0,.55)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 50 }
+const selectInput = { width: '100%', padding: '7px 10px', borderRadius: 7, border: '1px solid var(--line)', background: 'var(--panel2)', color: 'var(--ink)', outline: 'none', fontSize: 12.5 }
+const hint = { fontSize: 11.5, color: 'var(--muted)', background: 'var(--accent-soft)', border: '1px solid var(--accent-dim)', borderRadius: 8, padding: '9px 12px', marginBottom: 14 }
+const errBox = { padding: '10px 14px', borderRadius: 8, background: 'var(--red-soft)', border: '1px solid var(--red)', color: 'var(--red)', fontSize: 12.5, marginBottom: 16 }
+const overlay = { position: 'fixed', inset: 0, background: 'rgba(21,34,56,.35)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 50 }
 const modal = { background: 'var(--panel)', border: '1px solid var(--line)', borderRadius: 14, padding: '26px 28px', width: 440, maxHeight: '90vh', overflowY: 'auto' }

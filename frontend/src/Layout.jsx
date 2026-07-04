@@ -1,24 +1,16 @@
-import { useEffect, useState } from 'react'
-import { getMe } from './api.js'
-
 const ROLE_LABELS = {
   admin: 'Admin', project_manager: 'Project Manager', dt_coordinator: 'DT Coordinator',
   field_subcontractor: 'Field Subcontractor', regional_manager: 'Regional Manager', viewer: 'Viewer',
 }
 
-export default function Layout({ token, onLogout, active, onNavigate, children }) {
-  const [me, setMe] = useState(null)
-
-  useEffect(() => {
-    getMe(token).then(setMe).catch(err => {
-      if (err.message === 'SESSION_EXPIRED') onLogout()
-    })
-  }, [token])
-
+export default function Layout({ me, onLogout, active, onNavigate, children }) {
   const nav = [
     { key: 'command', label: 'Command Center', roles: 'all' },
     { key: 'pm', label: 'PM Dashboard', roles: ['admin', 'project_manager'] },
     { key: 'delivery', label: 'Project Delivery', roles: ['admin', 'project_manager'] },
+    { key: 'coordinator', label: 'My Area', roles: ['dt_coordinator'] },
+    { key: 'contractor', label: 'My Work', roles: ['field_subcontractor'] },
+    { key: 'regional', label: 'My Region', roles: ['regional_manager'] },
     { key: 'sites', label: 'Sites & Villages', roles: 'all' },
     { key: 'drivetests', label: 'Drive Tests', roles: 'all' },
     { key: 'acceptance', label: 'Acceptance', roles: 'all' },

@@ -13,17 +13,20 @@ from fastapi import Depends, FastAPI, File, HTTPException, UploadFile, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import OAuth2PasswordRequestForm
 from sqlalchemy import Integer, func, select
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, aliased
 
 from auth import create_access_token, hash_password, verify_password
-from dashboards import build_pm_dashboard, build_project_delivery_dashboard
+from dashboards import (
+    build_coordinator_dashboard, build_contractor_dashboard, build_pm_dashboard,
+    build_project_delivery_dashboard, build_regional_dashboard,
+)
 from database import get_db
 from deps import get_current_user, require_role
 from import_cpm import import_cpm_bytes
-from models import ContractorAssignment, Site, User, Village, VillageAcceptance, WorkItem
+from models import ContractorAssignment, Province, Site, User, Village, VillageAcceptance, WorkItem
 from schemas import (
-    AssignmentRead, AssignSiteRequest, SiteFilterOptions, SiteListItem, SiteListResponse,
-    SiteRead, UserCreate, UserRead, UserUpdate,
+    AssignmentRead, AssignSiteRequest, ProvinceRead, ProvinceUpdate, SiteFilterOptions,
+    SiteListItem, SiteListResponse, SiteRead, UserCreate, UserRead, UserUpdate,
 )
 
 app = FastAPI(title="USO Delivery & Acceptance Platform API")
@@ -424,3 +427,95 @@ def project_delivery_dashboard(
     a per-province drill-down), and yearly/monthly/per-subcontractor DT
     delivery charts. Admin + PM only."""
     return build_project_delivery_dashboard(db)
+
+
+@app.get("/dashboard/coordinator")
+def coordinator_dashboard(
+    db: Session = Depends(get_db),
+    user: User = Depends(require_role("dt_coordinator")),
+):
+    """DT Coordinator's own action center — scoped to the provinces where
+    they're the assigned PSO coordinator (Province.pso_coordinator_id)."""
+    return build_coordinator_dashboard(db, user)
+
+
+@app.get("/dashboard/contractor")
+def contractor_dashboard(
+    db: Session = Depends(get_db),
+    user: User = Depends(require_role("field_subcontractor")),
+):
+    """Field Subcontractor's own work view — scoped to sites where they
+    hold an active ContractorAssignment."""
+    return build_contractor_dashboard(db, user)
+
+
+@app.get("/dashboard/regional")
+def regional_dashboard(
+    db: Session = Depends(get_db),
+    user: User = Depends(require_role("regional_manager")),
+):
+    """Regional Manager's own view — scoped to the provinces where they're
+    the assigned Regional Manager (Province.regional_manager_id)."""
+    return build_regional_dashboard(db, user)
+
+
+@app.get("/provinces", response_model=list[ProvinceRead])
+def list_provinces(
+    db: Session = Depends(get_db),
+    _admin: User = Depends(require_role("admin")),
+):
+    """Admin-only: every province with its current CRA region, Regional
+    Manager, and PSO Coordinator — backs the Province Assignments table in
+    User Management."""
+    rm = aliased(User)
+    coord = aliased(User)
+    rows = db.execute(
+        select(Province, rm.full_name, coord.full_name)
+        .outerjoin(rm, rm.id == Province.regional_manager_id)
+        .outerjoin(coord, coord.id == Province.pso_coordinator_id)
+        .order_by(Province.name)
+    ).all()
+    return [
+        ProvinceRead(
+            id=p.id, name=p.name, cra_region=p.cra_region,
+            regional_manager_id=p.regional_manager_id, regional_manager_name=rm_name,
+            pso_coordinator_id=p.pso_coordinator_id, pso_coordinator_name=coord_name,
+        )
+        for p, rm_name, coord_name in rows
+    ]
+
+
+@app.patch("/provinces/{province_id}", response_model=ProvinceRead)
+def update_province(
+    province_id: uuid.UUID,
+    payload: ProvinceUpdate,
+    db: Session = Depends(get_db),
+    _admin: User = Depends(require_role("admin")),
+):
+    """Admin-only: reassign a province's Regional Manager and/or PSO
+    Coordinator. Full-replace — both fields are always set from what the
+    client sent (see ProvinceUpdate)."""
+    prov = db.get(Province, province_id)
+    if prov is None:
+        raise HTTPException(status_code=404, detail="Province not found")
+
+    rm_name = coord_name = None
+    if payload.regional_manager_id is not None:
+        rm = db.get(User, payload.regional_manager_id)
+        if rm is None or rm.role != "regional_manager":
+            raise HTTPException(status_code=400, detail="regional_manager_id must be a Regional Manager account")
+        rm_name = rm.full_name
+    if payload.pso_coordinator_id is not None:
+        coord = db.get(User, payload.pso_coordinator_id)
+        if coord is None or coord.role != "dt_coordinator":
+            raise HTTPException(status_code=400, detail="pso_coordinator_id must be a DT Coordinator account")
+        coord_name = coord.full_name
+
+    prov.regional_manager_id = payload.regional_manager_id
+    prov.pso_coordinator_id = payload.pso_coordinator_id
+    db.commit()
+    return ProvinceRead(
+        id=prov.id, name=prov.name, cra_region=prov.cra_region,
+        regional_manager_id=prov.regional_manager_id, regional_manager_name=rm_name,
+        pso_coordinator_id=prov.pso_coordinator_id, pso_coordinator_name=coord_name,
+    )

@@ -51,6 +51,30 @@ export function getProjectDeliveryDashboard(token) {
   return authed('/dashboard/delivery', token)
 }
 
+export function getCoordinatorDashboard(token) {
+  return authed('/dashboard/coordinator', token)
+}
+
+export function getContractorDashboard(token) {
+  return authed('/dashboard/contractor', token)
+}
+
+export function getRegionalDashboard(token) {
+  return authed('/dashboard/regional', token)
+}
+
+export function listProvinces(token) {
+  return authed('/provinces', token)
+}
+
+export function updateProvince(token, provinceId, payload) {
+  return authed(`/provinces/${provinceId}`, token, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  })
+}
+
 export async function importCpm(token, fileObj) {
   const form = new FormData()
   form.append('file', fileObj)
