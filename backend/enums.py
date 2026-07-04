@@ -129,8 +129,10 @@ class DTProgressStatus(str, enum.Enum):
 
 class DTProblematicCategory(str, enum.Enum):
     """Why a Work Item's drive test is problematic. Only meaningful when
-    dt_status == PROBLEMATIC. Five categories (MS = Managed Service)."""
-    ON_SITE_ISSUE = "on_site_issue"
+    dt_status == PROBLEMATIC. Five categories (MS = Managed Service);
+    PROJECT_RESPONSIBILITY is the exact label used in the real CPM export
+    (originally specified as "On-Site Issue" before the real file arrived)."""
+    PROJECT_RESPONSIBILITY = "project_responsibility"
     TEMP_POWER = "temp_power"
     MS_RESPONSIBILITY = "ms_responsibility"
     NWG_RESPONSIBILITY = "nwg_responsibility"

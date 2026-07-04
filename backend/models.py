@@ -353,14 +353,24 @@ class VillageAcceptance(Base):
 
     def recompute_finals(self) -> None:
         """Refresh the cached ict_final / cra_final flags from the per-tech
-        statuses. Call after any per-tech status change (and the CPM import
-        calls it after loading)."""
+        statuses, and apply the depreciation golden rule. Call after any
+        per-tech status change (and the CPM import calls it after loading).
+
+        Golden rule: the moment BOTH ict_final and cra_final become true
+        (every requested technology approved on both sides), the village is
+        ready for depreciation review — auto-set depreciation_status to
+        WAITING. Never downgrades an already-DEPRECIATED record: that's a
+        terminal, finance-closed state the app must not undo.
+        """
         def _final(statuses: list[AcceptanceStatus | None]) -> bool:
             requested = [s for s in statuses if s is not None]
             return bool(requested) and all(s == AcceptanceStatus.APPROVED for s in requested)
 
         self.ict_final = _final([self.ict_2g, self.ict_3g, self.ict_4g])
         self.cra_final = _final([self.cra_2g, self.cra_3g, self.cra_4g])
+
+        if self.ict_final and self.cra_final and self.depreciation_status != DepreciationStatus.DEPRECIATED.value:
+            self.depreciation_status = DepreciationStatus.WAITING.value
 
 
 class Letter(Base):

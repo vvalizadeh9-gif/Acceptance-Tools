@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react'
 import { getPmDashboard } from './api.js'
 
 const CAT_LABELS = {
-  on_site_issue: 'On-Site Issue', temp_power: 'Temp Power', ms_responsibility: 'MS Responsibility',
+  project_responsibility: 'Project Responsibility', temp_power: 'Temp Power', ms_responsibility: 'MS Responsibility',
   nwg_responsibility: 'NWG Responsibility', other: 'Other',
 }
 
