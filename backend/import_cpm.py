@@ -73,6 +73,7 @@ COL_STATUS = "آخرین مرحله انجام شده"       # last stage comple
 COL_DT_STATUS = "DT Status"
 COL_DT_CATEGORY = "DT Problematic Category"
 COL_DT_SC = "DT SC"
+COL_DT_DATE = "DT Date"
 
 # ICT / CRA acceptance (village grain)
 COL_ICT_2G, COL_ICT_3G, COL_ICT_4G = "2G-ICT", "3G-ICT", "4G-ICT"
@@ -207,12 +208,13 @@ def import_cpm_bytes(data: bytes, db: Session) -> dict:
         (row.site_id, row.site_type): {
             "id": row.id, "is_on_air": row.is_on_air, "dt_status": row.dt_status,
             "dt_problematic_category": row.dt_problematic_category,
+            "dt_date": row.dt_date,
             "dt_subcontractor_name": row.dt_subcontractor_name,
             "depreciation_status": row.depreciation_status,
         }
         for row in db.execute(select(
             WorkItem.id, WorkItem.site_id, WorkItem.site_type, WorkItem.is_on_air,
-            WorkItem.dt_status, WorkItem.dt_problematic_category,
+            WorkItem.dt_status, WorkItem.dt_problematic_category, WorkItem.dt_date,
             WorkItem.dt_subcontractor_name, WorkItem.depreciation_status,
         ))
     }
@@ -291,6 +293,7 @@ def import_cpm_bytes(data: bytes, db: Session) -> dict:
             if dt_status_val == DTProgressStatus.PROBLEMATIC.value else None
         )
         dt_sc_val = _clean(r.get(COL_DT_SC))[:255] or None
+        dt_date_val = _to_date(r.get(COL_DT_DATE))
         dep_legacy_val = DEPRECIATION_LEGACY_MAP.get(_clean(r.get(COL_DEPRECIATION_LEGACY)))
 
         # --- Work Item = Index 1 (Site + Site Type) ---
@@ -314,6 +317,9 @@ def import_cpm_bytes(data: bytes, db: Session) -> dict:
                 if wi_existing["dt_subcontractor_name"] is None and dt_sc_val:
                     fields["dt_subcontractor_name"] = dt_sc_val
                     wi_existing["dt_subcontractor_name"] = dt_sc_val
+                if wi_existing["dt_date"] is None and dt_date_val:
+                    fields["dt_date"] = dt_date_val
+                    wi_existing["dt_date"] = dt_date_val
                 # Depreciation only ever advances.
                 cur_rank = DEP_RANK.get(wi_existing["depreciation_status"], -1)
                 new_rank = DEP_RANK.get(dep_legacy_val, -1)
@@ -331,6 +337,8 @@ def import_cpm_bytes(data: bytes, db: Session) -> dict:
                     wi_new.dt_problematic_category = dt_category_val
                 if wi_new.dt_subcontractor_name is None and dt_sc_val:
                     wi_new.dt_subcontractor_name = dt_sc_val
+                if wi_new.dt_date is None and dt_date_val:
+                    wi_new.dt_date = dt_date_val
                 if dep_legacy_val and DEP_RANK.get(dep_legacy_val, -1) > DEP_RANK.get(wi_new.depreciation_status, -1):
                     wi_new.depreciation_status = dep_legacy_val
             else:
@@ -339,6 +347,7 @@ def import_cpm_bytes(data: bytes, db: Session) -> dict:
                     assignment_date=None, cpm_raw_status=status or None,
                     is_on_air=row_is_on_air,
                     dt_status=dt_status_val, dt_problematic_category=dt_category_val,
+                    dt_date=dt_date_val,
                     dt_subcontractor_name=dt_sc_val, depreciation_status=dep_legacy_val,
                 )
                 new_workitems[wkey] = new_wi

@@ -196,6 +196,9 @@ class WorkItem(Base):
     dt_status: Mapped[DTProgressStatus | None] = mapped_column(String(20))
     # Only meaningful when dt_status == PROBLEMATIC.
     dt_problematic_category: Mapped[DTProblematicCategory | None] = mapped_column(String(30))
+    # Date the drive test was delivered/completed (CPM "DT Date"). Drives the
+    # monthly/yearly DT-delivery charts on the Project Delivery dashboard.
+    dt_date: Mapped[date | None] = mapped_column(Date)
     # Historical DT subcontractor name from CPM (free text). Going forward the
     # authoritative assignment lives in ContractorAssignment; this is the
     # legacy record of who ran the drive test before the app existed.

@@ -31,4 +31,11 @@ if has_core and not has_version:
 subprocess.run(["alembic", "upgrade", "head"], check=True)
 PY
 
+# Seed the province -> CRA-region mapping (and the Regional Manager / PSO
+# Coordinator accounts). Idempotent: on an already-seeded database this only
+# refreshes the mapping and creates nothing new. Required for the role
+# dashboards to have any geographic scope to work with. New RM/Coordinator
+# accounts print a one-time temporary password to these logs on first run.
+python seed_provinces.py
+
 exec uvicorn main:app --host 0.0.0.0 --port 8000
