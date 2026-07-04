@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { getMe, getSummary, importCpm } from './api.js'
+import { getMe, getSummary, importCpm, resetImportedData } from './api.js'
 
 export default function Dashboard({ token, onLogout }) {
   const [me, setMe] = useState(null)
@@ -7,6 +7,8 @@ export default function Dashboard({ token, onLogout }) {
   const [error, setError] = useState('')
   const [importing, setImporting] = useState(false)
   const [importMsg, setImportMsg] = useState('')
+  const [resetting, setResetting] = useState(false)
+  const [resetMsg, setResetMsg] = useState('')
   const fileRef = useRef(null)
 
   async function loadData() {
@@ -37,6 +39,24 @@ export default function Dashboard({ token, onLogout }) {
     }
   }
 
+  async function handleReset() {
+    const sure = window.confirm(
+      'This permanently deletes ALL imported sites, villages, and acceptance data (not user accounts). ' +
+      'Use this only right before uploading a fresh CPM file. Continue?'
+    )
+    if (!sure) return
+    setResetting(true); setResetMsg('')
+    try {
+      await resetImportedData(token)
+      setResetMsg('Cleared. Upload the new CPM file now.')
+      await loadData()
+    } catch (err) {
+      setResetMsg('Error: ' + err.message)
+    } finally {
+      setResetting(false)
+    }
+  }
+
   return (
     <div>
       <h1 style={{ fontSize: 21, fontWeight: 700 }}>Command Center</h1>
@@ -57,13 +77,22 @@ export default function Dashboard({ token, onLogout }) {
           <h3 style={{ fontSize: 13.5, fontWeight: 700, marginBottom: 6 }}>Import CPM data</h3>
           <div style={{ color: 'var(--muted)', fontSize: 12.5, marginBottom: 14 }}>
             Upload a CPM Excel file (.xlsx). Re-uploading an updated file is safe &mdash; existing records won't be duplicated.
+            A large file with lots of history behind it can take a couple of minutes &mdash; let it finish.
           </div>
-          <input ref={fileRef} type="file" accept=".xlsx,.xls" onChange={handleFile} disabled={importing} style={{ display: 'none' }} id="cpmfile" />
-          <label htmlFor="cpmfile" style={{ display: 'inline-block', padding: '9px 18px', borderRadius: 8, background: 'var(--accent)', color: 'white', fontWeight: 600, fontSize: 13, opacity: importing ? 0.6 : 1, cursor: importing ? 'default' : 'pointer' }}>
-            {importing ? 'Importing...' : 'Choose CPM file'}
-          </label>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
+            <input ref={fileRef} type="file" accept=".xlsx,.xls" onChange={handleFile} disabled={importing} style={{ display: 'none' }} id="cpmfile" />
+            <label htmlFor="cpmfile" style={{ display: 'inline-block', padding: '9px 18px', borderRadius: 8, background: 'var(--accent)', color: 'white', fontWeight: 600, fontSize: 13, opacity: importing ? 0.6 : 1, cursor: importing ? 'default' : 'pointer' }}>
+              {importing ? 'Importing… this can take a while' : 'Choose CPM file'}
+            </label>
+            <button onClick={handleReset} disabled={resetting || importing} style={dangerBtn}>
+              {resetting ? 'Clearing…' : 'Reset imported data'}
+            </button>
+          </div>
           {importMsg && (
-            <div style={{ marginTop: 14, fontSize: 12.5, color: importMsg.startsWith('Error') ? '#fca5a5' : 'var(--green)' }}>{importMsg}</div>
+            <div style={{ marginTop: 14, fontSize: 12.5, color: importMsg.startsWith('Error') ? 'var(--red)' : 'var(--green)' }}>{importMsg}</div>
+          )}
+          {resetMsg && (
+            <div style={{ marginTop: 14, fontSize: 12.5, color: resetMsg.startsWith('Error') ? 'var(--red)' : 'var(--green)' }}>{resetMsg}</div>
           )}
         </div>
       )}
@@ -85,5 +114,6 @@ function Metric({ label, value, sub }) {
     </div>
   )
 }
-const errBox = { padding: '12px 16px', borderRadius: 10, marginBottom: 20, background: 'rgba(239,68,68,.1)', border: '1px solid rgba(239,68,68,.35)', color: '#fca5a5', fontSize: 13 }
+const errBox = { padding: '12px 16px', borderRadius: 10, marginBottom: 20, background: 'var(--red-soft)', border: '1px solid var(--red)', color: 'var(--red)', fontSize: 13 }
 const infoBox = { padding: '13px 16px', borderRadius: 10, fontSize: 12.5, color: 'var(--muted)', background: 'var(--accent-soft)', border: '1px solid var(--accent-dim)' }
+const dangerBtn = { padding: '9px 16px', borderRadius: 8, border: '1px solid var(--red)', background: 'transparent', color: 'var(--red)', fontWeight: 600, fontSize: 13, cursor: 'pointer' }

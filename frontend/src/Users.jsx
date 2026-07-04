@@ -4,6 +4,12 @@ import { ROLE_LABELS } from './Layout.jsx'
 
 const ROLES = ['admin', 'project_manager', 'dt_coordinator', 'field_subcontractor', 'regional_manager', 'viewer']
 
+function fieldForRole(role) {
+  if (role === 'regional_manager') return 'regional_manager_id'
+  if (role === 'dt_coordinator') return 'pso_coordinator_id'
+  return null
+}
+
 export default function Users({ token, onLogout }) {
   const [users, setUsers] = useState(null)
   const [error, setError] = useState('')
@@ -26,7 +32,7 @@ export default function Users({ token, onLogout }) {
         <div>
           <h1 style={{ fontSize: 21, fontWeight: 700 }}>User Management</h1>
           <div style={{ color: 'var(--muted)', fontSize: 13, marginTop: 3 }}>
-            Create and manage accounts across all roles.
+            Create and manage accounts across all roles. Edit a Regional Manager or DT Coordinator to choose which provinces they cover.
           </div>
         </div>
         <button onClick={() => setShowCreate(true)} style={primaryBtn}>+ New user</button>
@@ -69,8 +75,6 @@ export default function Users({ token, onLogout }) {
         </table>
       </div>
 
-      <ProvinceAssignments token={token} users={users} onLogout={onLogout} />
-
       {showCreate && (
         <UserForm
           token={token} mode="create"
@@ -89,98 +93,6 @@ export default function Users({ token, onLogout }) {
   )
 }
 
-function ProvinceAssignments({ token, users, onLogout }) {
-  const [provinces, setProvinces] = useState(null)
-  const [error, setError] = useState('')
-  const [savingId, setSavingId] = useState(null)
-
-  function load() {
-    listProvinces(token)
-      .then(setProvinces)
-      .catch(err => { if (err.message === 'SESSION_EXPIRED') onLogout(); else setError(err.message) })
-  }
-  useEffect(load, [token])
-
-  const regionalManagers = (users || []).filter(u => u.role === 'regional_manager' && u.is_active)
-  const coordinators = (users || []).filter(u => u.role === 'dt_coordinator' && u.is_active)
-
-  async function handleChange(province, field, value) {
-    const payload = {
-      regional_manager_id: province.regional_manager_id,
-      pso_coordinator_id: province.pso_coordinator_id,
-      [field]: value || null,
-    }
-    setSavingId(province.id)
-    setError('')
-    try {
-      const updated = await updateProvince(token, province.id, payload)
-      setProvinces(prev => prev.map(p => p.id === province.id ? updated : p))
-    } catch (err) {
-      if (err.message === 'SESSION_EXPIRED') { onLogout(); return }
-      setError(err.message)
-    } finally {
-      setSavingId(null)
-    }
-  }
-
-  return (
-    <div style={{ marginTop: 28 }}>
-      <div style={{ marginBottom: 14 }}>
-        <h2 style={{ fontSize: 16, fontWeight: 700 }}>Province Assignments</h2>
-        <div style={{ color: 'var(--muted)', fontSize: 12.5, marginTop: 3 }}>
-          Which Regional Manager and PSO Coordinator owns each province — this is what scopes their dashboards. Changes apply immediately.
-        </div>
-      </div>
-
-      {error && <div style={errBox}>{error}</div>}
-
-      <div style={{ background: 'var(--panel)', border: '1px solid var(--line)', borderRadius: 12, overflow: 'hidden' }}>
-        <div style={{ maxHeight: 480, overflowY: 'auto' }}>
-          <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
-            <thead>
-              <tr style={{ background: 'var(--panel2)' }}>
-                <Th>Province</Th><Th>CRA Region</Th><Th>Regional Manager</Th><Th>PSO Coordinator</Th>
-              </tr>
-            </thead>
-            <tbody>
-              {provinces === null ? (
-                <tr><td colSpan={4} style={{ padding: 20, color: 'var(--muted)' }}>Loading…</td></tr>
-              ) : provinces.map(p => (
-                <tr key={p.id} style={{ borderTop: '1px solid var(--line)', opacity: savingId === p.id ? 0.6 : 1 }}>
-                  <td style={td}>{p.name}</td>
-                  <td style={{ ...td, color: 'var(--muted)' }}>{p.cra_region}</td>
-                  <td style={td}>
-                    <select
-                      value={p.regional_manager_id || ''}
-                      onChange={e => handleChange(p, 'regional_manager_id', e.target.value)}
-                      disabled={savingId === p.id}
-                      style={selectInput}
-                    >
-                      <option value="">— Unassigned —</option>
-                      {regionalManagers.map(u => <option key={u.id} value={u.id}>{u.full_name}</option>)}
-                    </select>
-                  </td>
-                  <td style={td}>
-                    <select
-                      value={p.pso_coordinator_id || ''}
-                      onChange={e => handleChange(p, 'pso_coordinator_id', e.target.value)}
-                      disabled={savingId === p.id}
-                      style={selectInput}
-                    >
-                      <option value="">— Unassigned —</option>
-                      {coordinators.map(u => <option key={u.id} value={u.id}>{u.full_name}</option>)}
-                    </select>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      </div>
-    </div>
-  )
-}
-
 function UserForm({ token, mode, user, onClose, onSaved }) {
   const [email, setEmail] = useState(user?.email || '')
   const [fullName, setFullName] = useState(user?.full_name || '')
@@ -192,23 +104,69 @@ function UserForm({ token, mode, user, onClose, onSaved }) {
   const [error, setError] = useState('')
   const [saving, setSaving] = useState(false)
 
+  const [provinces, setProvinces] = useState([])
+  const [selectedProvinceIds, setSelectedProvinceIds] = useState([])
+  const needsProvinces = role === 'regional_manager' || role === 'dt_coordinator'
+
   useEffect(() => {
     getSiteFilterOptions(token).then(o => setRegions(o.regions)).catch(() => {})
+    listProvinces(token).then(setProvinces).catch(() => {})
   }, [token])
+
+  // Pre-check whichever provinces this user already owns for the currently
+  // selected role — recomputes if the admin switches the role dropdown.
+  useEffect(() => {
+    const field = fieldForRole(role)
+    if (mode === 'edit' && user && field) {
+      setSelectedProvinceIds(provinces.filter(p => p[field] === user.id).map(p => p.id))
+    } else {
+      setSelectedProvinceIds([])
+    }
+  }, [role, provinces, mode])
 
   async function save() {
     setError(''); setSaving(true)
     try {
+      let savedUser
       if (mode === 'create') {
         const payload = { email, full_name: fullName, role, password }
         if (role === 'regional_manager' && regionName) payload.region_name = regionName
-        await createUser(token, payload)
+        savedUser = await createUser(token, payload)
       } else {
         const payload = { full_name: fullName, role, is_active: isActive }
         if (password) payload.password = password
         if (role === 'regional_manager' && regionName) payload.region_name = regionName
-        await updateUser(token, user.id, payload)
+        savedUser = await updateUser(token, user.id, payload)
       }
+
+      // Apply add/remove province diffs for the CURRENT role.
+      const field = fieldForRole(role)
+      if (field) {
+        const originallyAssigned = mode === 'edit' ? provinces.filter(p => p[field] === user.id).map(p => p.id) : []
+        const toAdd = selectedProvinceIds.filter(id => !originallyAssigned.includes(id))
+        const toRemove = originallyAssigned.filter(id => !selectedProvinceIds.includes(id))
+        const otherField = field === 'regional_manager_id' ? 'pso_coordinator_id' : 'regional_manager_id'
+        for (const pid of toAdd) {
+          const prov = provinces.find(p => p.id === pid)
+          await updateProvince(token, pid, { [field]: savedUser.id, [otherField]: prov[otherField] })
+        }
+        for (const pid of toRemove) {
+          const prov = provinces.find(p => p.id === pid)
+          await updateProvince(token, pid, { [field]: null, [otherField]: prov[otherField] })
+        }
+      }
+      // If the role just changed AWAY from a province-scoped one, clear any
+      // stale assignments left over from the PREVIOUS role.
+      if (mode === 'edit' && user) {
+        const prevField = fieldForRole(user.role)
+        if (prevField && prevField !== field) {
+          const otherField = prevField === 'regional_manager_id' ? 'pso_coordinator_id' : 'regional_manager_id'
+          for (const prov of provinces.filter(p => p[prevField] === user.id)) {
+            await updateProvince(token, prov.id, { [prevField]: null, [otherField]: prov[otherField] })
+          }
+        }
+      }
+
       onSaved()
     } catch (err) {
       setError(err.message)
@@ -241,17 +199,29 @@ function UserForm({ token, mode, user, onClose, onSaved }) {
           </select>
         </Field>
         {role === 'regional_manager' && (
-          <Field label="Region (required for Regional Manager)">
+          <Field label="Region (legacy — scopes the Sites & Villages list)">
             <select value={regionName} onChange={e => setRegionName(e.target.value)} style={input}>
               <option value="">Select a region…</option>
               {regions.map(r => <option key={r} value={r}>{r}</option>)}
             </select>
           </Field>
         )}
-        {(role === 'regional_manager' || role === 'dt_coordinator') && (
-          <div style={hint}>
-            Which provinces this person covers is set below in <strong>Province Assignments</strong>, not here — one person can cover several provinces.
-          </div>
+        {needsProvinces && (
+          <Field label={`Provinces covered (${role === 'regional_manager' ? 'Regional Manager' : 'PSO Coordinator'} dashboards)`}>
+            <select
+              multiple
+              value={selectedProvinceIds}
+              onChange={e => setSelectedProvinceIds(Array.from(e.target.selectedOptions, o => o.value))}
+              style={{ ...input, height: 168 }}
+            >
+              {provinces.map(p => (
+                <option key={p.id} value={p.id}>{p.name} — {p.cra_region}</option>
+              ))}
+            </select>
+            <div style={{ fontSize: 11, color: 'var(--muted2)', marginTop: 5 }}>
+              Ctrl/Cmd-click (or Shift-click) to select multiple. This is what scopes their dashboard, separate from Region above.
+            </div>
+          </Field>
         )}
         <Field label={mode === 'create' ? 'Password' : 'New password (leave blank to keep current)'}>
           <input type="password" value={password} onChange={e => setPassword(e.target.value)} style={input} placeholder="At least 8 characters" />
@@ -295,8 +265,6 @@ const primaryBtn = { padding: '9px 18px', borderRadius: 8, border: 'none', backg
 const ghostBtn = { padding: '9px 18px', borderRadius: 8, border: '1px solid var(--line)', background: 'transparent', color: 'var(--muted)', fontSize: 13, cursor: 'pointer' }
 const smallBtn = { padding: '5px 12px', borderRadius: 7, border: '1px solid var(--line)', background: 'transparent', color: 'var(--ink)', fontSize: 12, cursor: 'pointer' }
 const input = { width: '100%', padding: '9px 12px', borderRadius: 8, border: '1px solid var(--line)', background: 'var(--panel2)', color: 'var(--ink)', outline: 'none' }
-const selectInput = { width: '100%', padding: '7px 10px', borderRadius: 7, border: '1px solid var(--line)', background: 'var(--panel2)', color: 'var(--ink)', outline: 'none', fontSize: 12.5 }
-const hint = { fontSize: 11.5, color: 'var(--muted)', background: 'var(--accent-soft)', border: '1px solid var(--accent-dim)', borderRadius: 8, padding: '9px 12px', marginBottom: 14 }
 const errBox = { padding: '10px 14px', borderRadius: 8, background: 'var(--red-soft)', border: '1px solid var(--red)', color: 'var(--red)', fontSize: 12.5, marginBottom: 16 }
 const overlay = { position: 'fixed', inset: 0, background: 'rgba(21,34,56,.35)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 50 }
 const modal = { background: 'var(--panel)', border: '1px solid var(--line)', borderRadius: 14, padding: '26px 28px', width: 440, maxHeight: '90vh', overflowY: 'auto' }

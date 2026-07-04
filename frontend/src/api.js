@@ -90,6 +90,10 @@ export async function importCpm(token, fileObj) {
   return res.json()
 }
 
+export function resetImportedData(token) {
+  return authed('/import/reset', token, { method: 'POST' })
+}
+
 export function listUsers(token) {
   return authed('/users', token)
 }

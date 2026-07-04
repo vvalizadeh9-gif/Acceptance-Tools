@@ -114,14 +114,20 @@ def build_pm_dashboard(db: Session) -> dict:
     def pending(has_expr, final_col):
         cond = and_(has_expr, final_col.is_(False))
         total = db.execute(select(func.count(VillageAcceptance.id)).where(cond)).scalar() or 0
+        # Built ONCE and reused in both SELECT and GROUP BY: Postgres requires
+        # the grouped expression to be the exact same construct as what's
+        # selected, and two separate func.coalesce(...) calls compile to two
+        # distinct parameterized expressions even though they look identical
+        # in source (SQLite doesn't enforce this, which is how this shipped).
+        coord_name = func.coalesce(User.full_name, "Unassigned coordinator")
         per_coord = db.execute(
-            select(func.coalesce(User.full_name, "Unassigned coordinator"), func.count(VillageAcceptance.id))
+            select(coord_name, func.count(VillageAcceptance.id))
             .select_from(VillageAcceptance)
             .join(Site, Site.id == VillageAcceptance.site_id)
             .join(Province, Province.id == Site.province_id)
             .outerjoin(User, User.id == Province.pso_coordinator_id)
             .where(cond)
-            .group_by(func.coalesce(User.full_name, "Unassigned coordinator"))
+            .group_by(coord_name)
             .order_by(func.count(VillageAcceptance.id).desc())
         ).all()
         return total, [{"name": n, "count": c} for n, c in per_coord]
@@ -428,11 +434,14 @@ def build_project_delivery_dashboard(db: Session) -> dict:
         return None if base is None else live - base
 
     # --- Ongoing sites per subcontractor, each with a per-province breakdown ---
+    # Built once, reused in SELECT + GROUP BY — see the identical note in
+    # build_pm_dashboard's `pending()` for why this matters on Postgres.
+    sc_name = func.coalesce(WorkItem.dt_subcontractor_name, "Unassigned")
     ongoing_rows = db.execute(
-        select(func.coalesce(WorkItem.dt_subcontractor_name, "Unassigned"), Site.province_name, func.count(WorkItem.id))
+        select(sc_name, Site.province_name, func.count(WorkItem.id))
         .join(Site, Site.id == WorkItem.site_id)
         .where(WorkItem.dt_status == _ONGOING)
-        .group_by(func.coalesce(WorkItem.dt_subcontractor_name, "Unassigned"), Site.province_name)
+        .group_by(sc_name, Site.province_name)
     ).all()
     by_sc: dict[str, dict] = {}
     for sc, prov, cnt in ongoing_rows:
@@ -496,9 +505,9 @@ def build_project_delivery_dashboard(db: Session) -> dict:
 
     # --- Per-subcontractor total delivered (no date needed -> exact) ---
     by_sc_total = db.execute(
-        select(func.coalesce(WorkItem.dt_subcontractor_name, "Unassigned"), func.count(WorkItem.id))
+        select(sc_name, func.count(WorkItem.id))
         .where(WorkItem.dt_status == _DONE)
-        .group_by(func.coalesce(WorkItem.dt_subcontractor_name, "Unassigned"))
+        .group_by(sc_name)
         .order_by(func.count(WorkItem.id).desc())
     ).all()
 
