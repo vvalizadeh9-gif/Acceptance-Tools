@@ -115,6 +115,17 @@ DT_CATEGORY_MAP = {
     "NWG Responsibility": DTProblematicCategory.NWG_RESPONSIBILITY.value,
     "Other": DTProblematicCategory.OTHER.value,
 }
+# Canonical display name per DT Subcontractor, keyed by UPPERCASE so casing
+# variants (the real file has both "Pcom" and "PCOM") collapse to one bar on
+# the per-subcontractor charts instead of silently splitting in two. Any
+# contractor not yet seen here passes through unchanged rather than being
+# dropped, so a new name never disappears — it just won't be normalized
+# until added here.
+DT_SC_CANONICAL = {
+    "SFO": "SFO", "INFINITEL": "Infinitel", "SITE SC": "Site SC",
+    "PCOM": "Pcom", "HFN": "HFN", "VIHAN": "Vihan",
+}
+
 DEPRECIATION_LEGACY_MAP = {
     "---": DepreciationStatus.REMAIN.value,
     "مستهلک فنی و مالی شده است": DepreciationStatus.DEPRECIATED.value,
@@ -135,6 +146,13 @@ def _province_uuid(label: str) -> uuid.UUID:
 def _clean(v) -> str:
     s = str(v).strip()
     return "" if s.lower() == "nan" else s
+
+
+def _normalize_dt_sc(raw) -> str | None:
+    val = _clean(raw)
+    if not val:
+        return None
+    return DT_SC_CANONICAL.get(val.upper(), val)[:255]
 
 
 def _resolve_site_key(official_raw: str, temp_raw: str) -> str:
@@ -292,7 +310,7 @@ def import_cpm_bytes(data: bytes, db: Session) -> dict:
             DT_CATEGORY_MAP.get(_clean(r.get(COL_DT_CATEGORY)))
             if dt_status_val == DTProgressStatus.PROBLEMATIC.value else None
         )
-        dt_sc_val = _clean(r.get(COL_DT_SC))[:255] or None
+        dt_sc_val = _normalize_dt_sc(r.get(COL_DT_SC))
         dt_date_val = _to_date(r.get(COL_DT_DATE))
         dep_legacy_val = DEPRECIATION_LEGACY_MAP.get(_clean(r.get(COL_DEPRECIATION_LEGACY)))
 
