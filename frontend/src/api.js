@@ -152,3 +152,96 @@ export function assignSite(token, siteId, payload) {
     body: JSON.stringify(payload),
   })
 }
+
+// ---------------------------------------------------------------------------
+// Acceptance (ICT / CRA)
+// ---------------------------------------------------------------------------
+
+export function listAcceptance(token, params = {}) {
+  const qs = new URLSearchParams(
+    Object.fromEntries(Object.entries(params).filter(([, v]) => v !== '' && v !== undefined && v !== null))
+  ).toString()
+  return authed(`/acceptance?${qs}`, token)
+}
+
+export function getAcceptance(token, id) {
+  return authed(`/acceptance/${id}`, token)
+}
+
+export function updateAcceptanceIct(token, id, payload) {
+  return authed(`/acceptance/${id}/ict`, token, {
+    method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload),
+  })
+}
+
+export function updateAcceptanceCra(token, id, payload) {
+  return authed(`/acceptance/${id}/cra`, token, {
+    method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload),
+  })
+}
+
+// ---------------------------------------------------------------------------
+// Letters
+// ---------------------------------------------------------------------------
+
+export function listLetters(token, search = '') {
+  const qs = search ? `?search=${encodeURIComponent(search)}` : ''
+  return authed(`/letters${qs}`, token)
+}
+
+export function createLetter(token, payload) {
+  return authed('/letters', token, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload),
+  })
+}
+
+// ---------------------------------------------------------------------------
+// Drive Tests
+// ---------------------------------------------------------------------------
+
+export function listWorkItemDriveTests(token, workItemId) {
+  return authed(`/work-items/${workItemId}/drive-tests`, token)
+}
+
+export function listDriveTestReviews(token, driveTestId) {
+  return authed(`/drive-tests/${driveTestId}/reviews`, token)
+}
+
+export function submitDriveTest(token, payload) {
+  return authed('/drive-tests', token, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload),
+  })
+}
+
+export function validateDriveTest(token, id, payload) {
+  return authed(`/drive-tests/${id}/validate`, token, {
+    method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload),
+  })
+}
+
+export function approveDriveTest(token, id, payload) {
+  return authed(`/drive-tests/${id}/approve`, token, {
+    method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload),
+  })
+}
+
+export function rejectDriveTest(token, id, payload) {
+  return authed(`/drive-tests/${id}/reject`, token, {
+    method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload),
+  })
+}
+
+// ---------------------------------------------------------------------------
+// CPM Change Review Center
+// ---------------------------------------------------------------------------
+
+export function listPendingChanges(token, decision = 'pending') {
+  const qs = decision ? `?decision=${encodeURIComponent(decision)}` : ''
+  return authed(`/pending-changes${qs}`, token)
+}
+
+export function resolvePendingChange(token, id, decision) {
+  return authed(`/pending-changes/${id}`, token, {
+    method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ decision }),
+  })
+}

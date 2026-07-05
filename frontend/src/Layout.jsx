@@ -17,6 +17,7 @@ export default function Layout({ me, onLogout, active, onNavigate, children }) {
     { key: 'drivetests', label: 'Drive Tests', roles: 'all' },
     { key: 'acceptance', label: 'Acceptance', roles: 'all' },
     { key: 'letters', label: 'Letters', roles: 'all' },
+    { key: 'cpmreview', label: 'CPM Review', roles: ['admin', 'project_manager'] },
     { key: 'users', label: 'User Management', roles: ['admin'] },
   ]
 

@@ -327,6 +327,7 @@ class AcceptanceListItem(BaseModel):
     id: uuid.UUID
     site_id: uuid.UUID
     site_business_id: Optional[str] = None
+    province_id: Optional[uuid.UUID] = None
     province_name: Optional[str] = None
     village_id: str
     village_name: Optional[str] = None

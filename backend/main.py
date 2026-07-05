@@ -620,7 +620,7 @@ def list_acceptance(
     page_size = min(max(page_size, 1), 200)
 
     q = (
-        select(VillageAcceptance, Site.site_id, Site.province_name, Village.village_name)
+        select(VillageAcceptance, Site.site_id, Site.province_id, Site.province_name, Village.village_name)
         .join(Site, Site.id == VillageAcceptance.site_id)
         .outerjoin(
             Village,
@@ -647,13 +647,14 @@ def list_acceptance(
 
     items = [
         AcceptanceListItem(
-            id=va.id, site_id=va.site_id, site_business_id=sid, province_name=pname,
+            id=va.id, site_id=va.site_id, site_business_id=sid,
+            province_id=pid, province_name=pname,
             village_id=va.village_id, village_name=vname,
             ict_2g=va.ict_2g, ict_3g=va.ict_3g, ict_4g=va.ict_4g, ict_final=va.ict_final,
             cra_2g=va.cra_2g, cra_3g=va.cra_3g, cra_4g=va.cra_4g, cra_final=va.cra_final,
             depreciation_status=va.depreciation_status,
         )
-        for va, sid, pname, vname in rows
+        for va, sid, pid, pname, vname in rows
     ]
     return AcceptanceListResponse(total=total, page=page, page_size=page_size, items=items)
 

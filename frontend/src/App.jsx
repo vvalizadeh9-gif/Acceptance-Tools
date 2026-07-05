@@ -11,6 +11,10 @@ import ProjectDelivery from './ProjectDelivery.jsx'
 import CoordinatorDashboard from './CoordinatorDashboard.jsx'
 import ContractorDashboard from './ContractorDashboard.jsx'
 import RegionalDashboard from './RegionalDashboard.jsx'
+import Acceptance from './Acceptance.jsx'
+import DriveTests from './DriveTests.jsx'
+import Letters from './Letters.jsx'
+import CpmReview from './CpmReview.jsx'
 
 // Where each role lands right after login — "their area", not a generic
 // screen they have to navigate away from.
@@ -66,6 +70,10 @@ export default function App() {
   else if (page === 'contractor') content = <ContractorDashboard token={token} onLogout={handleLogout} />
   else if (page === 'regional') content = <RegionalDashboard token={token} onLogout={handleLogout} />
   else if (page === 'sites') content = <Sites token={token} onLogout={handleLogout} />
+  else if (page === 'acceptance') content = <Acceptance token={token} onLogout={handleLogout} />
+  else if (page === 'drivetests') content = <DriveTests token={token} onLogout={handleLogout} />
+  else if (page === 'letters') content = <Letters token={token} onLogout={handleLogout} />
+  else if (page === 'cpmreview') content = <CpmReview token={token} onLogout={handleLogout} />
   else content = <Placeholder page={page} />
 
   return (
