@@ -1,10 +1,12 @@
 const ROLE_LABELS = {
   admin: 'Admin', project_manager: 'Project Manager', dt_coordinator: 'DT Coordinator',
-  field_subcontractor: 'Field Subcontractor', regional_manager: 'Regional Manager', viewer: 'Viewer',
+  field_subcontractor: 'Field Subcontractor', regional_manager: 'Regional Manager',
+  finance: 'Finance', viewer: 'Viewer',
 }
 
 export default function Layout({ me, onLogout, active, onNavigate, children }) {
   const nav = [
+    { key: 'action', label: 'Action Center', roles: 'all' },
     { key: 'command', label: 'Command Center', roles: 'all' },
     { key: 'pm', label: 'PM Dashboard', roles: ['admin', 'project_manager'] },
     { key: 'delivery', label: 'Project Delivery', roles: ['admin', 'project_manager'] },

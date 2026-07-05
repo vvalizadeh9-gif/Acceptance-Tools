@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { getMe } from './api.js'
 import Login from './Login.jsx'
 import Layout from './Layout.jsx'
+import ActionCenter from './ActionCenter.jsx'
 import Dashboard from './Dashboard.jsx'
 import Users from './Users.jsx'
 import Sites from './Sites.jsx'
@@ -16,9 +17,10 @@ import RegionalDashboard from './RegionalDashboard.jsx'
 const DEFAULT_PAGE_BY_ROLE = {
   admin: 'command',
   project_manager: 'pm',
-  dt_coordinator: 'coordinator',
-  field_subcontractor: 'contractor',
+  dt_coordinator: 'action',
+  field_subcontractor: 'action',
   regional_manager: 'regional',
+  finance: 'command',
   viewer: 'command',
 }
 
@@ -56,6 +58,7 @@ export default function App() {
 
   let content
   if (page === 'users') content = <Users token={token} onLogout={handleLogout} />
+  else if (page === 'action') content = <ActionCenter token={token} onLogout={handleLogout} />
   else if (page === 'command') content = <Dashboard token={token} onLogout={handleLogout} />
   else if (page === 'pm') content = <PmDashboard token={token} onLogout={handleLogout} />
   else if (page === 'delivery') content = <ProjectDelivery token={token} onLogout={handleLogout} />

@@ -9,13 +9,14 @@ import uuid
 from datetime import datetime, timezone
 from typing import Optional
 
-from fastapi import Depends, FastAPI, File, HTTPException, UploadFile, status
+from fastapi import Depends, FastAPI, File, Form, HTTPException, UploadFile, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import OAuth2PasswordRequestForm
 from sqlalchemy import Integer, func, select
 from sqlalchemy.orm import Session, aliased
 
 from auth import create_access_token, hash_password, verify_password
+from captcha import generate_captcha, verify_captcha
 from dashboards import (
     build_coordinator_dashboard, build_contractor_dashboard, build_pm_dashboard,
     build_project_delivery_dashboard, build_regional_dashboard,
@@ -59,8 +60,28 @@ def health():
     return {"status": "ok"}
 
 
+@app.get("/auth/captcha")
+def get_captcha():
+    """Issue a fresh login security code: a noisy SVG image plus a short-lived
+    signed token. No login required (this is what you call BEFORE logging in).
+    The plaintext code lives only in the image; the token carries a salted
+    hash of it, so it round-trips safely."""
+    return generate_captcha()
+
+
 @app.post("/auth/login")
-def login(form: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get_db)):
+def login(
+    form: OAuth2PasswordRequestForm = Depends(),
+    captcha_token: str = Form(...),
+    captcha_code: str = Form(...),
+    db: Session = Depends(get_db),
+):
+    """Verify the security code first, then the credentials. Ordering the
+    captcha check first blunts credential-stuffing: an automated password
+    guess can't even reach the password comparison without solving a fresh
+    image each time."""
+    if not verify_captcha(captcha_token, captcha_code):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Incorrect or expired security code")
     user = db.query(User).filter(User.email == form.username).first()
     if not user or not verify_password(form.password, user.hashed_password):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Incorrect email or password")

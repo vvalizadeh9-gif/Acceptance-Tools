@@ -1,9 +1,17 @@
 const BASE = '/api'
 
-export async function login(email, password) {
+export async function getCaptcha() {
+  const res = await fetch(`${BASE}/auth/captcha`)
+  if (!res.ok) throw new Error('Could not load the security code. Try again.')
+  return res.json() // { captcha_token, image }
+}
+
+export async function login(email, password, captchaToken, captchaCode) {
   const body = new URLSearchParams()
   body.set('username', email)
   body.set('password', password)
+  body.set('captcha_token', captchaToken)
+  body.set('captcha_code', captchaCode)
   const res = await fetch(`${BASE}/auth/login`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
@@ -41,6 +49,10 @@ export function getSites(token) {
 
 export function getSummary(token) {
   return authed('/summary', token)
+}
+
+export function getActionCenter(token) {
+  return authed('/action-center', token)
 }
 
 export function getPmDashboard(token) {
