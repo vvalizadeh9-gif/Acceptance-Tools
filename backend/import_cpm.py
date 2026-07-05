@@ -54,8 +54,11 @@ import pandas as pd
 from sqlalchemy import bindparam, select, update
 from sqlalchemy.orm import Session
 
-from enums import AcceptanceStatus, DepreciationStatus, DTProblematicCategory, DTProgressStatus
-from models import Site, Village, VillageAcceptance, WorkItem
+from enums import (
+    AcceptanceStatus, ChangeDecision, ChangeSeverity, DepreciationStatus,
+    DTProblematicCategory, DTProgressStatus,
+)
+from models import PendingChange, Site, Village, VillageAcceptance, WorkItem
 
 # ---- Exact column names from the CPM file ----
 COL_SITE = "کدسایت موقت"                 # temporary site code (fallback identity)
@@ -266,17 +269,55 @@ def import_cpm_bytes(data: bytes, db: Session) -> dict:
         ))
     }
 
+    # CPM Change Review Center: PENDING conflicts already staged, keyed by
+    # (entity_id, field_name), so a re-import doesn't pile up duplicates —
+    # it refreshes the existing row's new_value instead. Only unresolved
+    # (decision == PENDING) rows are considered live conflicts.
+    existing_pending: dict[tuple, dict] = {
+        (row.entity_id, row.field_name): {"id": row.id, "new_value": row.new_value}
+        for row in db.execute(
+            select(PendingChange.id, PendingChange.entity_id, PendingChange.field_name, PendingChange.new_value)
+            .where(PendingChange.decision == ChangeDecision.PENDING.value)
+        )
+    }
+
     new_sites: dict[str, Site] = {}
     new_villages: dict[tuple, Village] = {}
     new_workitems: dict[tuple, WorkItem] = {}
     new_acceptance: dict[tuple, VillageAcceptance] = {}
+    new_pending: list[PendingChange] = []                    # conflicts to stage this run
+    pending_value_updates: dict[uuid.UUID, str | None] = {}  # existing PendingChange.id -> refreshed new_value
     villages_to_flip_on: set = set()   # existing Village.id needing is_on_air -> True
     workitems_to_flip_on: set = set()  # existing WorkItem.id needing is_on_air -> True
     workitem_field_updates: dict[uuid.UUID, dict] = {}      # existing WorkItem.id -> {field: value}
     acceptance_field_updates: dict[uuid.UUID, dict] = {}    # existing VillageAcceptance.id -> {field: value}
 
     counts = {"sites": 0, "villages": 0, "work_items": 0, "acceptance": 0,
+              "conflicts_staged": 0,
               "target_rows": target_rows, "excluded_non_target": excluded}
+
+    def _stage_conflict(entity_id: uuid.UUID, field_name: str, old_value, new_value) -> None:
+        """Record (or refresh) a CPM-vs-app conflict on a human-approved
+        field, instead of silently discarding CPM's differing value. Deduped
+        by (entity_id, field_name): if a PENDING conflict already exists for
+        this field, just refresh its new_value; otherwise stage a new one."""
+        key = (entity_id, field_name)
+        old_s = None if old_value is None else str(old_value)
+        new_s = None if new_value is None else str(new_value)
+        prior = existing_pending.get(key)
+        if prior is not None:
+            if prior["new_value"] != new_s:
+                pending_value_updates[prior["id"]] = new_s
+                prior["new_value"] = new_s
+            return
+        pc = PendingChange(
+            id=uuid.uuid4(), entity_type="village_acceptance", entity_id=entity_id,
+            field_name=field_name, old_value=old_s, new_value=new_s,
+            severity=ChangeSeverity.HIGH.value, decision=ChangeDecision.PENDING.value,
+        )
+        new_pending.append(pc)
+        existing_pending[key] = {"id": pc.id, "new_value": new_s}
+        counts["conflicts_staged"] += 1
 
     for r in df.to_dict("records"):
         temp_code = _clean(r.get(COL_SITE))
@@ -427,8 +468,10 @@ def import_cpm_bytes(data: bytes, db: Session) -> dict:
                 existing = existing_acceptance.get(akey)
                 if existing is not None:
                     fields = {}
-                    # ICT side: only touch it if no human has approved it in
+                    # ICT side: only auto-apply if no human has approved it in
                     # the app yet (Single Source Ownership after first touch).
+                    # Once app-owned, a differing CPM value is NOT discarded —
+                    # it's staged as a PENDING conflict for the PM to resolve.
                     if existing["ict_approved_by"] is None:
                         for gen in requested_gens:
                             if existing[f"ict_{gen}"] != ict_vals[gen]:
@@ -440,6 +483,10 @@ def import_cpm_bytes(data: bytes, db: Session) -> dict:
                             fields["ict_letter_number"] = ict_letter_number
                         if ict_letter_date:
                             fields["ict_letter_date"] = ict_letter_date
+                    else:
+                        for gen in requested_gens:
+                            if existing[f"ict_{gen}"] != ict_vals[gen]:
+                                _stage_conflict(existing["id"], f"ict_{gen}", existing[f"ict_{gen}"], ict_vals[gen])
                     if existing["cra_approved_by"] is None:
                         for gen in requested_gens:
                             if existing[f"cra_{gen}"] != cra_vals[gen]:
@@ -451,6 +498,10 @@ def import_cpm_bytes(data: bytes, db: Session) -> dict:
                             fields["cra_letter_number"] = cra_letter_number
                         if cra_letter_date:
                             fields["cra_letter_date"] = cra_letter_date
+                    else:
+                        for gen in requested_gens:
+                            if existing[f"cra_{gen}"] != cra_vals[gen]:
+                                _stage_conflict(existing["id"], f"cra_{gen}", existing[f"cra_{gen}"], cra_vals[gen])
                     # Depreciation only ever advances (independent of the
                     # ICT/CRA approved_by guard above — it's always safe to
                     # move forward on the historical legacy value).
@@ -489,6 +540,12 @@ def import_cpm_bytes(data: bytes, db: Session) -> dict:
     db.add_all(new_workitems.values())
     db.add_all(new_villages.values())
     db.add_all(new_acceptance.values())
+    db.add_all(new_pending)
+    if pending_value_updates:
+        stmt = update(PendingChange.__table__).where(PendingChange.id == bindparam("_id")).values(
+            new_value=bindparam("new_value")
+        )
+        db.execute(stmt, [{"_id": pid, "new_value": nv} for pid, nv in pending_value_updates.items()])
     if workitems_to_flip_on:
         db.execute(update(WorkItem).where(WorkItem.id.in_(workitems_to_flip_on)).values(is_on_air=True))
     if villages_to_flip_on:

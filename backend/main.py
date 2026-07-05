@@ -29,14 +29,15 @@ from drive_test_service import (
 )
 from models import (
     ContractorAssignment, DriveTest, DriveTestReview, Letter, LetterVillageMapping,
-    Province, Site, User, Village, VillageAcceptance, WorkItem,
+    PendingChange, Province, Site, User, Village, VillageAcceptance, WorkItem,
 )
 from schemas import (
     AcceptanceListItem, AcceptanceListResponse, AcceptanceSideUpdate, AssignmentRead,
     AssignSiteRequest, DriveTestApprove, DriveTestReject, DriveTestReviewItem,
     DriveTestSubmit, DriveTestRead, DriveTestValidate, LetterCreate, LetterRead,
-    ProvinceRead, ProvinceUpdate, SiteFilterOptions, SiteListItem, SiteListResponse,
-    SiteRead, UserCreate, UserRead, UserUpdate, VillageAcceptanceRead,
+    PendingChangeRead, PendingChangeResolve, ProvinceRead, ProvinceUpdate,
+    SiteFilterOptions, SiteListItem, SiteListResponse, SiteRead, UserCreate, UserRead,
+    UserUpdate, VillageAcceptanceRead,
 )
 
 app = FastAPI(title="USO Delivery & Acceptance Platform API")
@@ -913,3 +914,97 @@ def reject_dt(
     db.commit()
     db.refresh(dt)
     return dt
+
+
+# ===========================================================================
+# CPM Change Review Center — a CPM re-import that would contradict a value a
+# human already approved does NOT silently overwrite (or silently discard).
+# It stages the conflict here for the PM to Accept (apply CPM's value),
+# Ignore (keep the app value), or Flag (acknowledge, decide later).
+# ===========================================================================
+
+_ACCEPTANCE_FIELDS = {"ict_2g", "ict_3g", "ict_4g", "cra_2g", "cra_3g", "cra_4g"}
+
+
+@app.get("/pending-changes", response_model=list[PendingChangeRead])
+def list_pending_changes(
+    decision: str = "pending",
+    db: Session = Depends(get_db),
+    _user: User = Depends(require_role("admin", "project_manager")),
+):
+    """Staged CPM conflicts for PM review (default: unresolved 'pending').
+    Enriched with village/site context so each row is actionable on its own."""
+    q = select(PendingChange).order_by(PendingChange.created_at.desc())
+    if decision:
+        q = q.where(PendingChange.decision == decision)
+    changes = db.execute(q).scalars().all()
+
+    # Enrich village_acceptance conflicts with site/village context in one pass.
+    acc_ids = [c.entity_id for c in changes if c.entity_type == "village_acceptance"]
+    ctx: dict[uuid.UUID, tuple] = {}
+    if acc_ids:
+        rows = db.execute(
+            select(VillageAcceptance.id, Site.site_id, Site.province_name, VillageAcceptance.village_id)
+            .join(Site, Site.id == VillageAcceptance.site_id)
+            .where(VillageAcceptance.id.in_(acc_ids))
+        ).all()
+        ctx = {r[0]: (r[1], r[2], r[3]) for r in rows}
+
+    out = []
+    for c in changes:
+        sid, pname, vid = ctx.get(c.entity_id, (None, None, None))
+        out.append(PendingChangeRead(
+            id=c.id, entity_type=c.entity_type, entity_id=c.entity_id, field_name=c.field_name,
+            old_value=c.old_value, new_value=c.new_value, severity=c.severity,
+            decision=c.decision, created_at=c.created_at,
+            site_business_id=sid, province_name=pname, village_id=vid,
+        ))
+    return out
+
+
+@app.put("/pending-changes/{change_id}", response_model=PendingChangeRead)
+def resolve_pending_change(
+    change_id: uuid.UUID,
+    payload: PendingChangeResolve,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_role("admin", "project_manager")),
+):
+    """Resolve a staged conflict.
+      * accepted -> apply CPM's value to the live acceptance row (override the
+        app value) and recompute Final + depreciation.
+      * ignored  -> keep the app value; the conflict is dismissed.
+      * flagged  -> acknowledged, kept visible for follow-up.
+    """
+    pc = db.get(PendingChange, change_id)
+    if pc is None:
+        raise HTTPException(status_code=404, detail="Pending change not found")
+    if pc.decision != "pending":
+        raise HTTPException(status_code=409, detail=f"This change was already resolved ('{pc.decision}')")
+
+    if payload.decision == "accepted" and pc.entity_type == "village_acceptance" and pc.field_name in _ACCEPTANCE_FIELDS:
+        acc = db.get(VillageAcceptance, pc.entity_id)
+        if acc is not None:
+            setattr(acc, pc.field_name, pc.new_value)
+            acc.recompute_finals()
+
+    pc.decision = payload.decision
+    pc.decided_by = user.id
+    pc.decided_at = datetime.now(timezone.utc)
+    db.commit()
+    db.refresh(pc)
+
+    sid = pname = vid = None
+    if pc.entity_type == "village_acceptance":
+        row = db.execute(
+            select(Site.site_id, Site.province_name, VillageAcceptance.village_id)
+            .join(Site, Site.id == VillageAcceptance.site_id)
+            .where(VillageAcceptance.id == pc.entity_id)
+        ).first()
+        if row:
+            sid, pname, vid = row
+    return PendingChangeRead(
+        id=pc.id, entity_type=pc.entity_type, entity_id=pc.entity_id, field_name=pc.field_name,
+        old_value=pc.old_value, new_value=pc.new_value, severity=pc.severity,
+        decision=pc.decision, created_at=pc.created_at,
+        site_business_id=sid, province_name=pname, village_id=vid,
+    )

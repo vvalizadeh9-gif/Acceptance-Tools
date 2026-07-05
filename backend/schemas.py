@@ -378,6 +378,24 @@ class PendingChangeResolve(BaseModel):
     decision: str = Field(pattern="^(accepted|ignored|flagged)$")
 
 
+class PendingChangeRead(BaseModel):
+    """One staged CPM-vs-app conflict, enriched with the village context so
+    the PM can decide without a lookup."""
+    id: uuid.UUID
+    entity_type: str
+    entity_id: uuid.UUID
+    field_name: str
+    old_value: Optional[str] = None
+    new_value: Optional[str] = None
+    severity: str
+    decision: str
+    created_at: datetime
+    # Context (village_acceptance conflicts only)
+    site_business_id: Optional[str] = None
+    province_name: Optional[str] = None
+    village_id: Optional[str] = None
+
+
 # ---------------------------------------------------------------------------
 # Province — geographic backbone; Admin assigns Regional Manager / PSO
 # Coordinator ownership per province here (User Management).
