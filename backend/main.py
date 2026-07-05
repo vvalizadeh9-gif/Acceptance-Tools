@@ -24,6 +24,7 @@ from database import get_db
 from deps import get_current_user, require_role
 from import_cpm import import_cpm_bytes
 from acceptance_service import register_letter, update_acceptance_side, village_name_map
+from action_center import build_action_center
 from drive_test_service import (
     WorkflowError, coordinator_validate, pm_decide, submit_drive_test,
 )
@@ -416,6 +417,17 @@ def summary(db: Session = Depends(get_db), current_user: User = Depends(get_curr
         "total_on_air": total_on_air,
         "total_villages": total_villages,
     }
+
+
+@app.get("/action-center")
+def action_center(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """The current user's personal 'what needs me' inbox — live-derived and
+    role-scoped. Every role can call it; each gets only its own actionable
+    cards (Finance/Viewer get none)."""
+    return build_action_center(db, current_user)
 
 
 @app.get("/dashboard/pm")
