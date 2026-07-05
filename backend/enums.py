@@ -11,15 +11,18 @@ import enum
 
 
 class UserRole(str, enum.Enum):
-    """Six roles, per the actual requirements session (the architecture PDF
-    had flattened Admin into Project Manager and dropped Viewer — this is
-    the corrected, authoritative list).
+    """Seven roles. Six come from the original requirements session (the
+    architecture PDF had flattened Admin into Project Manager and dropped
+    Viewer); Finance was added later, tied to the financial-depreciation /
+    budget scope and the تاریخ ابلاغ (official MTN assignment date) that
+    feeds it. Finance sees financial data only.
 
     Admin:            full control, user management, final approvals.
     Project Manager:  dashboard/KPI/bottleneck visibility only — no writes.
     DT Coordinator:   registers Acceptance data, ICT/CRA letters, approvals.
     Field Subcontractor: sees only assigned sites; logs DT dates/progress.
     Regional Manager: read-only, scoped to their own region.
+    Finance:          financial/depreciation data only (budget module scope).
     Viewer:           read-only, sees only Admin-approved data.
     """
     ADMIN = "admin"
@@ -27,6 +30,7 @@ class UserRole(str, enum.Enum):
     DT_COORDINATOR = "dt_coordinator"
     FIELD_SUBCONTRACTOR = "field_subcontractor"
     REGIONAL_MANAGER = "regional_manager"
+    FINANCE = "finance"
     VIEWER = "viewer"
 
 

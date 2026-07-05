@@ -215,12 +215,34 @@ class DriveTestReviewCreate(BaseModel):
 # ---------------------------------------------------------------------------
 
 class VillageAcceptanceRead(ORMBase):
+    """One acceptance row per (site, village), wide per-technology layout —
+    mirrors the restructured VillageAcceptance model. A per-tech field is
+    None when that technology was not requested for the village."""
     id: uuid.UUID
     site_id: uuid.UUID
     village_id: str
-    technology: Technology
-    ict_status: AcceptanceStatus
-    cra_status: AcceptanceStatus
+
+    ict_2g: Optional[AcceptanceStatus] = None
+    ict_3g: Optional[AcceptanceStatus] = None
+    ict_4g: Optional[AcceptanceStatus] = None
+    ict_final: bool
+    ict_comment: Optional[str] = None
+    ict_letter_number: Optional[str] = None
+    ict_letter_date: Optional[date] = None
+    ict_approved_by: Optional[uuid.UUID] = None
+    ict_approved_at: Optional[datetime] = None
+
+    cra_2g: Optional[AcceptanceStatus] = None
+    cra_3g: Optional[AcceptanceStatus] = None
+    cra_4g: Optional[AcceptanceStatus] = None
+    cra_final: bool
+    cra_comment: Optional[str] = None
+    cra_letter_number: Optional[str] = None
+    cra_letter_date: Optional[date] = None
+    cra_approved_by: Optional[uuid.UUID] = None
+    cra_approved_at: Optional[datetime] = None
+
+    depreciation_status: Optional[str] = None
     updated_at: datetime
 
 

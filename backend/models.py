@@ -81,7 +81,7 @@ class User(Base):
     __table_args__ = (
         CheckConstraint(
             "role IN ('admin','project_manager','dt_coordinator',"
-            "'field_subcontractor','regional_manager','viewer')",
+            "'field_subcontractor','regional_manager','finance','viewer')",
             name="chk_user_role_vocab",
         ),
     )
@@ -183,6 +183,12 @@ class WorkItem(Base):
     site_id: Mapped[uuid.UUID] = mapped_column(Uuid, ForeignKey("site.id", ondelete="RESTRICT"), nullable=False)
     site_type: Mapped[str] = mapped_column(String(100), nullable=False)
     assignment_date: Mapped[date | None] = mapped_column(Date)
+    # تاریخ ابلاغ — the date MTN officially assigned/announced this site
+    # (the "first assignment", distinct from the DT-subcontractor assignment
+    # which lives in ContractorAssignment). Sourced from CPM, fill-blanks
+    # only. Not used by any workflow today; it exists because the future
+    # Budget/depreciation module keys its calculations off this date.
+    official_assignment_date: Mapped[date | None] = mapped_column(Date)
     # Denormalized cache of the state machine (Rule 3). Never written
     # directly by API consumers — recomputed from timeline_event.
     status: Mapped[WorkItemStatus] = mapped_column(String(20), nullable=False, default=WorkItemStatus.NEW)

@@ -75,6 +75,12 @@ COL_DT_CATEGORY = "DT Problematic Category"
 COL_DT_SC = "DT SC"
 COL_DT_DATE = "DT Date"
 
+# تاریخ ابلاغ — official MTN assignment/announcement date (Work Item grain).
+# Feeds the future Budget/depreciation module, no workflow today. If the real
+# CPM header differs from this string the column is simply absent and the
+# importer skips it harmlessly (r.get -> None); adjust this one constant then.
+COL_OFFICIAL_ASSIGN = "تاریخ ابلاغ"
+
 # ICT / CRA acceptance (village grain)
 COL_ICT_2G, COL_ICT_3G, COL_ICT_4G = "2G-ICT", "3G-ICT", "4G-ICT"
 COL_ICT_COMMENT, COL_ICT_LETTER_DATE, COL_ICT_LETTER_NUMBER = "Comment-ICT", "Letter Date-ICT", "Letter Number-ICT"
@@ -228,12 +234,14 @@ def import_cpm_bytes(data: bytes, db: Session) -> dict:
             "dt_problematic_category": row.dt_problematic_category,
             "dt_date": row.dt_date,
             "dt_subcontractor_name": row.dt_subcontractor_name,
+            "official_assignment_date": row.official_assignment_date,
             "depreciation_status": row.depreciation_status,
         }
         for row in db.execute(select(
             WorkItem.id, WorkItem.site_id, WorkItem.site_type, WorkItem.is_on_air,
             WorkItem.dt_status, WorkItem.dt_problematic_category, WorkItem.dt_date,
-            WorkItem.dt_subcontractor_name, WorkItem.depreciation_status,
+            WorkItem.dt_subcontractor_name, WorkItem.official_assignment_date,
+            WorkItem.depreciation_status,
         ))
     }
     # Acceptance is one row per (site, village). Preload the per-tech values
@@ -312,6 +320,7 @@ def import_cpm_bytes(data: bytes, db: Session) -> dict:
         )
         dt_sc_val = _normalize_dt_sc(r.get(COL_DT_SC))
         dt_date_val = _to_date(r.get(COL_DT_DATE))
+        official_assign_val = _to_date(r.get(COL_OFFICIAL_ASSIGN))
         dep_legacy_val = DEPRECIATION_LEGACY_MAP.get(_clean(r.get(COL_DEPRECIATION_LEGACY)))
 
         # --- Work Item = Index 1 (Site + Site Type) ---
@@ -338,6 +347,9 @@ def import_cpm_bytes(data: bytes, db: Session) -> dict:
                 if wi_existing["dt_date"] is None and dt_date_val:
                     fields["dt_date"] = dt_date_val
                     wi_existing["dt_date"] = dt_date_val
+                if wi_existing["official_assignment_date"] is None and official_assign_val:
+                    fields["official_assignment_date"] = official_assign_val
+                    wi_existing["official_assignment_date"] = official_assign_val
                 # Depreciation only ever advances.
                 cur_rank = DEP_RANK.get(wi_existing["depreciation_status"], -1)
                 new_rank = DEP_RANK.get(dep_legacy_val, -1)
@@ -357,6 +369,8 @@ def import_cpm_bytes(data: bytes, db: Session) -> dict:
                     wi_new.dt_subcontractor_name = dt_sc_val
                 if wi_new.dt_date is None and dt_date_val:
                     wi_new.dt_date = dt_date_val
+                if wi_new.official_assignment_date is None and official_assign_val:
+                    wi_new.official_assignment_date = official_assign_val
                 if dep_legacy_val and DEP_RANK.get(dep_legacy_val, -1) > DEP_RANK.get(wi_new.depreciation_status, -1):
                     wi_new.depreciation_status = dep_legacy_val
             else:
@@ -365,7 +379,7 @@ def import_cpm_bytes(data: bytes, db: Session) -> dict:
                     assignment_date=None, cpm_raw_status=status or None,
                     is_on_air=row_is_on_air,
                     dt_status=dt_status_val, dt_problematic_category=dt_category_val,
-                    dt_date=dt_date_val,
+                    dt_date=dt_date_val, official_assignment_date=official_assign_val,
                     dt_subcontractor_name=dt_sc_val, depreciation_status=dep_legacy_val,
                 )
                 new_workitems[wkey] = new_wi
