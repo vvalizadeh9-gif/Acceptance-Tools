@@ -24,15 +24,19 @@ from database import get_db
 from deps import get_current_user, require_role
 from import_cpm import import_cpm_bytes
 from acceptance_service import register_letter, update_acceptance_side, village_name_map
+from drive_test_service import (
+    WorkflowError, coordinator_validate, pm_decide, submit_drive_test,
+)
 from models import (
-    ContractorAssignment, Letter, LetterVillageMapping, Province, Site, User,
-    Village, VillageAcceptance, WorkItem,
+    ContractorAssignment, DriveTest, DriveTestReview, Letter, LetterVillageMapping,
+    Province, Site, User, Village, VillageAcceptance, WorkItem,
 )
 from schemas import (
     AcceptanceListItem, AcceptanceListResponse, AcceptanceSideUpdate, AssignmentRead,
-    AssignSiteRequest, LetterCreate, LetterRead, ProvinceRead, ProvinceUpdate,
-    SiteFilterOptions, SiteListItem, SiteListResponse, SiteRead, UserCreate, UserRead,
-    UserUpdate, VillageAcceptanceRead,
+    AssignSiteRequest, DriveTestApprove, DriveTestReject, DriveTestReviewItem,
+    DriveTestSubmit, DriveTestRead, DriveTestValidate, LetterCreate, LetterRead,
+    ProvinceRead, ProvinceUpdate, SiteFilterOptions, SiteListItem, SiteListResponse,
+    SiteRead, UserCreate, UserRead, UserUpdate, VillageAcceptanceRead,
 )
 
 app = FastAPI(title="USO Delivery & Acceptance Platform API")
@@ -772,3 +776,140 @@ def list_letters(
         )
         for l in letters
     ]
+
+
+# ===========================================================================
+# Drive Test — two-stage approval:
+#   Subcontractor submits -> Coordinator validates -> PM approves/rejects.
+# Separation of duties is enforced in drive_test_service (PM can only act on
+# a coordinator-validated DT). A rejected DT is terminal; the subcontractor
+# submits a fresh revision to retry.
+# ===========================================================================
+
+def _contractor_holds_assignment(db: Session, user_id: uuid.UUID, work_item_id: uuid.UUID) -> bool:
+    return db.execute(
+        select(ContractorAssignment.id).where(
+            ContractorAssignment.work_item_id == work_item_id,
+            ContractorAssignment.contractor_id == user_id,
+            ContractorAssignment.ended_at.is_(None),
+        )
+    ).first() is not None
+
+
+@app.get("/work-items/{work_item_id}/drive-tests", response_model=list[DriveTestRead])
+def list_drive_tests(
+    work_item_id: uuid.UUID,
+    db: Session = Depends(get_db),
+    _user: User = Depends(get_current_user),
+):
+    """Every drive test for a work item, newest revision first (its history)."""
+    return db.execute(
+        select(DriveTest).where(DriveTest.work_item_id == work_item_id)
+        .order_by(DriveTest.revision_no.desc())
+    ).scalars().all()
+
+
+@app.get("/drive-tests/{drive_test_id}/reviews", response_model=list[DriveTestReviewItem])
+def list_drive_test_reviews(
+    drive_test_id: uuid.UUID,
+    db: Session = Depends(get_db),
+    _user: User = Depends(get_current_user),
+):
+    """The per-stage decision ledger (coordinator then PM) for one drive test."""
+    return db.execute(
+        select(DriveTestReview).where(DriveTestReview.drive_test_id == drive_test_id)
+        .order_by(DriveTestReview.review_date)
+    ).scalars().all()
+
+
+@app.post("/drive-tests", response_model=DriveTestRead, status_code=201)
+def submit_dt(
+    payload: DriveTestSubmit,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_role("admin", "field_subcontractor")),
+):
+    """Subcontractor submits a drive test for a work item they're actively
+    assigned to (Admin may submit for any). Fails if a drive test is already
+    in progress for that work item."""
+    wi = db.get(WorkItem, payload.work_item_id)
+    if wi is None:
+        raise HTTPException(status_code=404, detail="Work item not found")
+    if user.role == "field_subcontractor" and not _contractor_holds_assignment(db, user.id, wi.id):
+        raise HTTPException(status_code=403, detail="You are not assigned to this work item")
+    try:
+        dt = submit_drive_test(
+            db, wi, contractor_id=user.id,
+            delivery_date=payload.delivery_date, report_url=payload.report_url,
+        )
+    except WorkflowError as e:
+        raise HTTPException(status_code=409, detail=str(e))
+    db.commit()
+    db.refresh(dt)
+    return dt
+
+
+def _load_dt_for_stage(db: Session, drive_test_id: uuid.UUID) -> tuple[DriveTest, WorkItem]:
+    dt = db.get(DriveTest, drive_test_id)
+    if dt is None:
+        raise HTTPException(status_code=404, detail="Drive test not found")
+    wi = db.get(WorkItem, dt.work_item_id)
+    return dt, wi
+
+
+@app.put("/drive-tests/{drive_test_id}/validate", response_model=DriveTestRead)
+def validate_dt(
+    drive_test_id: uuid.UUID,
+    payload: DriveTestValidate,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_role("admin", "dt_coordinator")),
+):
+    """Coordinator stage-1 review. Coordinators are scoped to their own
+    provinces. Approve queues it for the PM; reject sends it back."""
+    dt, wi = _load_dt_for_stage(db, drive_test_id)
+    if user.role == "dt_coordinator" and not _coordinator_owns_site(db, user, wi.site_id):
+        raise HTTPException(status_code=403, detail="This work item is outside the provinces you coordinate")
+    try:
+        coordinator_validate(db, dt, approve=payload.approve, comment=payload.comment, reviewer_id=user.id)
+    except WorkflowError as e:
+        raise HTTPException(status_code=409, detail=str(e))
+    db.commit()
+    db.refresh(dt)
+    return dt
+
+
+@app.put("/drive-tests/{drive_test_id}/approve", response_model=DriveTestRead)
+def approve_dt(
+    drive_test_id: uuid.UUID,
+    payload: DriveTestApprove,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_role("admin", "project_manager")),
+):
+    """PM stage-2 approval. Only valid on a coordinator-validated
+    (UNDER_REVIEW) drive test. Marks the work item's DT status DONE."""
+    dt, wi = _load_dt_for_stage(db, drive_test_id)
+    try:
+        pm_decide(db, dt, wi, approve=True, comment=payload.comment, reviewer_id=user.id)
+    except WorkflowError as e:
+        raise HTTPException(status_code=409, detail=str(e))
+    db.commit()
+    db.refresh(dt)
+    return dt
+
+
+@app.put("/drive-tests/{drive_test_id}/reject", response_model=DriveTestRead)
+def reject_dt(
+    drive_test_id: uuid.UUID,
+    payload: DriveTestReject,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_role("admin", "project_manager")),
+):
+    """PM stage-2 rejection (reason required). Sends the drive test back so
+    the subcontractor can submit a corrected revision."""
+    dt, wi = _load_dt_for_stage(db, drive_test_id)
+    try:
+        pm_decide(db, dt, wi, approve=False, comment=payload.comment, reviewer_id=user.id)
+    except WorkflowError as e:
+        raise HTTPException(status_code=409, detail=str(e))
+    db.commit()
+    db.refresh(dt)
+    return dt

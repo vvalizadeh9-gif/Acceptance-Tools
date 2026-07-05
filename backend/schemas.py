@@ -196,18 +196,53 @@ class HealthCheckCreate(BaseModel):
     comment: Optional[str] = Field(default=None, max_length=2000)
 
 
-class DriveTestCreate(BaseModel):
+class DriveTestSubmit(BaseModel):
+    """Subcontractor submits a drive test for one of their assigned work
+    items. Status is always SUBMITTED on creation — not client-settable."""
     work_item_id: uuid.UUID
     delivery_date: date
-    report_url: str
-    status: DriveTestStatus = DriveTestStatus.SUBMITTED
+    report_url: str = Field(min_length=1, max_length=2000)
 
 
-class DriveTestReviewCreate(BaseModel):
-    drive_test_id: uuid.UUID
-    review_level: str = Field(max_length=50)
+class DriveTestValidate(BaseModel):
+    """Coordinator stage-1 decision. A rejection must carry a reason."""
+    approve: bool
+    comment: str = Field(default="", max_length=2000)
+
+    @model_validator(mode="after")
+    def reason_required_on_reject(self):
+        if not self.approve and len(self.comment.strip()) < 3:
+            raise ValueError("A rejection must include a short reason (comment).")
+        return self
+
+
+class DriveTestApprove(BaseModel):
+    """PM stage-2 approval. Comment optional."""
+    comment: str = Field(default="", max_length=2000)
+
+
+class DriveTestReject(BaseModel):
+    """PM (or coordinator) rejection — reason required."""
+    comment: str = Field(min_length=3, max_length=2000)
+
+
+class DriveTestReviewItem(ORMBase):
+    review_level: str
     decision: ReviewDecision
-    comment: str = Field(min_length=15, max_length=2000)
+    comment: str
+    reviewer: uuid.UUID
+    review_date: datetime
+
+
+class DriveTestRead(ORMBase):
+    id: uuid.UUID
+    work_item_id: uuid.UUID
+    contractor_id: uuid.UUID
+    delivery_date: date
+    report_url: str
+    status: DriveTestStatus
+    revision_no: int
+    created_at: datetime
 
 
 # ---------------------------------------------------------------------------
