@@ -23,10 +23,16 @@ from dashboards import (
 from database import get_db
 from deps import get_current_user, require_role
 from import_cpm import import_cpm_bytes
-from models import ContractorAssignment, Province, Site, User, Village, VillageAcceptance, WorkItem
+from acceptance_service import register_letter, update_acceptance_side, village_name_map
+from models import (
+    ContractorAssignment, Letter, LetterVillageMapping, Province, Site, User,
+    Village, VillageAcceptance, WorkItem,
+)
 from schemas import (
-    AssignmentRead, AssignSiteRequest, ProvinceRead, ProvinceUpdate, SiteFilterOptions,
-    SiteListItem, SiteListResponse, SiteRead, UserCreate, UserRead, UserUpdate,
+    AcceptanceListItem, AcceptanceListResponse, AcceptanceSideUpdate, AssignmentRead,
+    AssignSiteRequest, LetterCreate, LetterRead, ProvinceRead, ProvinceUpdate,
+    SiteFilterOptions, SiteListItem, SiteListResponse, SiteRead, UserCreate, UserRead,
+    UserUpdate, VillageAcceptanceRead,
 )
 
 app = FastAPI(title="USO Delivery & Acceptance Platform API")
@@ -519,3 +525,250 @@ def update_province(
         regional_manager_id=prov.regional_manager_id, regional_manager_name=rm_name,
         pso_coordinator_id=prov.pso_coordinator_id, pso_coordinator_name=coord_name,
     )
+
+
+# ===========================================================================
+# Acceptance (ICT / CRA) — in-app write surface. ICT and CRA are two
+# independent processes (kept separate everywhere, per the spec). Any write
+# stamps that side's approved_by, which locks the CPM importer out of that
+# side from then on (Single Source Ownership).
+# ===========================================================================
+
+def _acceptance_visible_site_ids(db: Session, user: User):
+    """Scalar subquery of site ids this user may SEE acceptance for, or None
+    for 'all sites'. Mirrors the /sites and dashboard scoping."""
+    if user.role in ("admin", "project_manager", "viewer", "finance"):
+        return None
+    if user.role == "dt_coordinator":
+        return select(Site.id).where(
+            Site.province_id.in_(select(Province.id).where(Province.pso_coordinator_id == user.id))
+        )
+    if user.role == "regional_manager":
+        return select(Site.id).where(
+            Site.province_id.in_(select(Province.id).where(Province.regional_manager_id == user.id))
+        )
+    if user.role == "field_subcontractor":
+        return (
+            select(WorkItem.site_id)
+            .join(ContractorAssignment, ContractorAssignment.work_item_id == WorkItem.id)
+            .where(ContractorAssignment.contractor_id == user.id, ContractorAssignment.ended_at.is_(None))
+        )
+    return select(Site.id).where(False)  # fail closed
+
+
+def _coordinator_owns_site(db: Session, user: User, site_id: uuid.UUID) -> bool:
+    prov_id = db.execute(select(Site.province_id).where(Site.id == site_id)).scalar()
+    if prov_id is None:
+        return False
+    owner = db.execute(select(Province.pso_coordinator_id).where(Province.id == prov_id)).scalar()
+    return owner == user.id
+
+
+@app.get("/acceptance", response_model=AcceptanceListResponse)
+def list_acceptance(
+    page: int = 1,
+    page_size: int = 50,
+    search: str = "",
+    province: str = "",
+    ict_final: Optional[bool] = None,
+    cra_final: Optional[bool] = None,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Village-grain acceptance list, role-scoped (coordinator -> their
+    provinces, regional manager -> their region, contractor -> assigned
+    sites, everyone else -> all)."""
+    page = max(page, 1)
+    page_size = min(max(page_size, 1), 200)
+
+    q = (
+        select(VillageAcceptance, Site.site_id, Site.province_name, Village.village_name)
+        .join(Site, Site.id == VillageAcceptance.site_id)
+        .outerjoin(
+            Village,
+            (Village.site_id == VillageAcceptance.site_id)
+            & (Village.village_id == VillageAcceptance.village_id),
+        )
+    )
+    visible = _acceptance_visible_site_ids(db, current_user)
+    if visible is not None:
+        q = q.where(VillageAcceptance.site_id.in_(visible))
+    if province:
+        q = q.where(Site.province_name == province)
+    if search:
+        like = f"%{search.strip()}%"
+        q = q.where((VillageAcceptance.village_id.ilike(like)) | (Village.village_name.ilike(like)))
+    if ict_final is not None:
+        q = q.where(VillageAcceptance.ict_final.is_(ict_final))
+    if cra_final is not None:
+        q = q.where(VillageAcceptance.cra_final.is_(cra_final))
+
+    total = db.execute(select(func.count()).select_from(q.subquery())).scalar()
+    q = q.order_by(Site.site_id, VillageAcceptance.village_id).offset((page - 1) * page_size).limit(page_size)
+    rows = db.execute(q).all()
+
+    items = [
+        AcceptanceListItem(
+            id=va.id, site_id=va.site_id, site_business_id=sid, province_name=pname,
+            village_id=va.village_id, village_name=vname,
+            ict_2g=va.ict_2g, ict_3g=va.ict_3g, ict_4g=va.ict_4g, ict_final=va.ict_final,
+            cra_2g=va.cra_2g, cra_3g=va.cra_3g, cra_4g=va.cra_4g, cra_final=va.cra_final,
+            depreciation_status=va.depreciation_status,
+        )
+        for va, sid, pname, vname in rows
+    ]
+    return AcceptanceListResponse(total=total, page=page, page_size=page_size, items=items)
+
+
+@app.get("/acceptance/{acceptance_id}", response_model=VillageAcceptanceRead)
+def get_acceptance(
+    acceptance_id: uuid.UUID,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    acc = db.get(VillageAcceptance, acceptance_id)
+    if acc is None:
+        raise HTTPException(status_code=404, detail="Acceptance record not found")
+    visible = _acceptance_visible_site_ids(db, current_user)
+    if visible is not None:
+        allowed = db.execute(select(Site.id).where(Site.id == acc.site_id, Site.id.in_(visible))).first()
+        if allowed is None:
+            raise HTTPException(status_code=403, detail="This acceptance record is outside your scope")
+    return acc
+
+
+def _apply_side_update(
+    acceptance_id: uuid.UUID, side: str, payload: AcceptanceSideUpdate,
+    db: Session, user: User,
+) -> VillageAcceptance:
+    acc = db.get(VillageAcceptance, acceptance_id)
+    if acc is None:
+        raise HTTPException(status_code=404, detail="Acceptance record not found")
+    if user.role == "dt_coordinator" and not _coordinator_owns_site(db, user, acc.site_id):
+        raise HTTPException(status_code=403, detail="This village is outside the provinces you coordinate")
+
+    statuses = {}
+    for gen, val in (("2g", payload.g2), ("3g", payload.g3), ("4g", payload.g4)):
+        if val is not None:
+            statuses[gen] = val.value
+    try:
+        update_acceptance_side(
+            db, acc, side,
+            statuses=statuses, comment=payload.comment,
+            letter_number=payload.letter_number, letter_date=payload.letter_date,
+            actor_id=user.id,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+    db.commit()
+    db.refresh(acc)
+    return acc
+
+
+@app.put("/acceptance/{acceptance_id}/ict", response_model=VillageAcceptanceRead)
+def update_acceptance_ict(
+    acceptance_id: uuid.UUID,
+    payload: AcceptanceSideUpdate,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_role("admin", "dt_coordinator")),
+):
+    """Update a village's ICT side. Coordinators are scoped to their own
+    provinces; Admin is unrestricted. Stamps ict_approved_by (Single Source
+    Ownership) and recomputes ict_final + depreciation."""
+    return _apply_side_update(acceptance_id, "ict", payload, db, user)
+
+
+@app.put("/acceptance/{acceptance_id}/cra", response_model=VillageAcceptanceRead)
+def update_acceptance_cra(
+    acceptance_id: uuid.UUID,
+    payload: AcceptanceSideUpdate,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_role("admin", "dt_coordinator")),
+):
+    """Update a village's CRA side (independent of ICT). Same scoping and
+    Single-Source-Ownership stamping as the ICT side."""
+    return _apply_side_update(acceptance_id, "cra", payload, db, user)
+
+
+# ===========================================================================
+# Letters — one official letter clears one to thousands of villages at once
+# (Rule 5 fan-out). ICT vs CRA is decided by the letter's organization.
+# ===========================================================================
+
+@app.post("/letters", response_model=LetterRead, status_code=201)
+def create_letter(
+    payload: LetterCreate,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_role("admin", "dt_coordinator")),
+):
+    """Record one letter and fan it out: approve every requested technology
+    on the letter's side across every linked village, in one transaction.
+    Coordinators may only attach villages inside the provinces they
+    coordinate."""
+    if db.query(Letter).filter(Letter.letter_number == payload.letter_number).first():
+        raise HTTPException(status_code=409, detail="A letter with that number already exists")
+
+    accs = db.query(VillageAcceptance).filter(
+        VillageAcceptance.id.in_(payload.village_acceptance_ids)
+    ).all()
+    found = {a.id for a in accs}
+    missing = [str(v) for v in payload.village_acceptance_ids if v not in found]
+    if missing:
+        raise HTTPException(status_code=404, detail="Unknown village acceptance id(s): " + ", ".join(missing))
+
+    if user.role == "dt_coordinator":
+        for acc in accs:
+            if not _coordinator_owns_site(db, user, acc.site_id):
+                raise HTTPException(
+                    status_code=403,
+                    detail="One or more villages are outside the provinces you coordinate",
+                )
+
+    try:
+        letter = register_letter(
+            db,
+            letter_number=payload.letter_number, letter_date=payload.letter_date,
+            organization=payload.organization.value,
+            province_or_region_id=payload.province_or_region_id,
+            comment=payload.comment, pdf_attachment_url=payload.pdf_attachment_url,
+            village_acceptance_ids=payload.village_acceptance_ids, actor_id=user.id,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+    db.commit()
+    db.refresh(letter)
+    return LetterRead(
+        id=letter.id, letter_number=letter.letter_number, letter_date=letter.letter_date,
+        organization=letter.organization, province_or_region_id=letter.province_or_region_id,
+        comment=letter.comment, pdf_attachment_url=letter.pdf_attachment_url,
+        created_at=letter.created_at, village_count=len(payload.village_acceptance_ids),
+    )
+
+
+@app.get("/letters", response_model=list[LetterRead])
+def list_letters(
+    search: str = "",
+    db: Session = Depends(get_db),
+    _user: User = Depends(get_current_user),
+):
+    """All letters, newest first, with a village count each. Optional search
+    by letter number."""
+    counts = dict(
+        db.execute(
+            select(LetterVillageMapping.letter_id, func.count(LetterVillageMapping.id))
+            .group_by(LetterVillageMapping.letter_id)
+        ).all()
+    )
+    q = select(Letter).order_by(Letter.created_at.desc())
+    if search:
+        q = q.where(Letter.letter_number.ilike(f"%{search.strip()}%"))
+    letters = db.execute(q).scalars().all()
+    return [
+        LetterRead(
+            id=l.id, letter_number=l.letter_number, letter_date=l.letter_date,
+            organization=l.organization, province_or_region_id=l.province_or_region_id,
+            comment=l.comment, pdf_attachment_url=l.pdf_attachment_url,
+            created_at=l.created_at, village_count=counts.get(l.id, 0),
+        )
+        for l in letters
+    ]

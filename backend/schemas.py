@@ -246,16 +246,71 @@ class VillageAcceptanceRead(ORMBase):
     updated_at: datetime
 
 
+class AcceptanceSideUpdate(BaseModel):
+    """A coordinator's edit to ONE side (ICT or CRA) of one village. Only
+    requested technologies may carry a status — passing g2/g3/g4 for a
+    technology that wasn't requested for this village is a 422 (enforced in
+    the route). A None field means 'leave unchanged'. Any successful update
+    stamps that side's approved_by (Single Source Ownership)."""
+    g2: Optional[AcceptanceStatus] = None
+    g3: Optional[AcceptanceStatus] = None
+    g4: Optional[AcceptanceStatus] = None
+    comment: Optional[str] = Field(default=None, max_length=2000)
+    letter_number: Optional[str] = Field(default=None, max_length=100)
+    letter_date: Optional[date] = None
+
+
 class LetterCreate(BaseModel):
     """Rule 5: one letter, many villages. `village_acceptance_ids` fans
-    out to LetterVillageMapping rows in a single transaction — see the
-    acceptance service, not the ORM layer, for the atomic write."""
+    out to LetterVillageMapping rows in a single transaction, approving
+    every requested technology on the letter's side (ICT or CRA, from the
+    organization) across every linked village — see acceptance_service."""
     letter_number: str = Field(max_length=100)
     letter_date: date
     organization: LetterOrganization
     province_or_region_id: uuid.UUID
     comment: Optional[str] = None
+    pdf_attachment_url: Optional[str] = None
     village_acceptance_ids: list[uuid.UUID] = Field(min_length=1)
+
+
+class LetterRead(ORMBase):
+    id: uuid.UUID
+    letter_number: str
+    letter_date: date
+    organization: str
+    province_or_region_id: uuid.UUID
+    comment: Optional[str] = None
+    pdf_attachment_url: Optional[str] = None
+    created_at: datetime
+    village_count: int = 0
+
+
+class AcceptanceListItem(BaseModel):
+    """One row in the Acceptance table — the village plus a compact summary
+    of both independent sides (ICT and CRA stay separate, per the spec)."""
+    id: uuid.UUID
+    site_id: uuid.UUID
+    site_business_id: Optional[str] = None
+    province_name: Optional[str] = None
+    village_id: str
+    village_name: Optional[str] = None
+    ict_2g: Optional[AcceptanceStatus] = None
+    ict_3g: Optional[AcceptanceStatus] = None
+    ict_4g: Optional[AcceptanceStatus] = None
+    ict_final: bool
+    cra_2g: Optional[AcceptanceStatus] = None
+    cra_3g: Optional[AcceptanceStatus] = None
+    cra_4g: Optional[AcceptanceStatus] = None
+    cra_final: bool
+    depreciation_status: Optional[str] = None
+
+
+class AcceptanceListResponse(BaseModel):
+    total: int
+    page: int
+    page_size: int
+    items: list[AcceptanceListItem]
 
 
 # ---------------------------------------------------------------------------
