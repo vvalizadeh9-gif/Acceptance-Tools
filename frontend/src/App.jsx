@@ -12,6 +12,7 @@ import CoordinatorDashboard from './CoordinatorDashboard.jsx'
 import ContractorDashboard from './ContractorDashboard.jsx'
 import RegionalDashboard from './RegionalDashboard.jsx'
 import Acceptance from './Acceptance.jsx'
+import AcceptanceDashboard from './AcceptanceDashboard.jsx'
 import DriveTests from './DriveTests.jsx'
 import Letters from './Letters.jsx'
 import CpmReview from './CpmReview.jsx'
@@ -70,7 +71,8 @@ export default function App() {
   else if (page === 'contractor') content = <ContractorDashboard token={token} onLogout={handleLogout} />
   else if (page === 'regional') content = <RegionalDashboard token={token} onLogout={handleLogout} />
   else if (page === 'sites') content = <Sites token={token} onLogout={handleLogout} />
-  else if (page === 'acceptance') content = <Acceptance token={token} onLogout={handleLogout} />
+  else if (page === 'acceptance') content = <AcceptanceDashboard token={token} onLogout={handleLogout} onManage={() => setPage('acceptance_edit')} />
+  else if (page === 'acceptance_edit') content = <Acceptance token={token} onLogout={handleLogout} onBack={() => setPage('acceptance')} />
   else if (page === 'drivetests') content = <DriveTests token={token} onLogout={handleLogout} />
   else if (page === 'letters') content = <Letters token={token} onLogout={handleLogout} />
   else if (page === 'cpmreview') content = <CpmReview token={token} onLogout={handleLogout} />

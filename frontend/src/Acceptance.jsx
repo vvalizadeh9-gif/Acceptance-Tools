@@ -10,7 +10,7 @@ const STATUS_COLOR = {
   not_submitted: { bg: 'var(--panel2)', fg: 'var(--muted2)' },
 }
 
-export default function Acceptance({ token, onLogout }) {
+export default function Acceptance({ token, onLogout, onBack }) {
   const [data, setData] = useState(null)
   const [filterOptions, setFilterOptions] = useState(null)
   const [me, setMe] = useState(null)
@@ -48,7 +48,8 @@ export default function Acceptance({ token, onLogout }) {
 
   return (
     <div>
-      <h1 style={{ fontSize: 21, fontWeight: 700 }}>Acceptance</h1>
+      {onBack && <button onClick={onBack} style={{ background: 'none', border: 'none', color: 'var(--accent)', fontSize: 12.5, cursor: 'pointer', padding: 0, marginBottom: 10 }}>← Back to dashboard</button>}
+      <h1 style={{ fontSize: 21, fontWeight: 700 }}>Manage Village Acceptance</h1>
       <div style={{ color: 'var(--muted)', fontSize: 13, marginTop: 3, marginBottom: 22 }}>
         {data ? `${data.total.toLocaleString()} villages` : 'Loading…'} &mdash; ICT and CRA are independent processes, tracked side by side.
       </div>

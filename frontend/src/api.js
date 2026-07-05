@@ -55,6 +55,10 @@ export function getActionCenter(token) {
   return authed('/action-center', token)
 }
 
+export function getAcceptanceDashboard(token, technology = 'all') {
+  return authed(`/dashboard/acceptance?technology=${encodeURIComponent(technology)}`, token)
+}
+
 export function getPmDashboard(token) {
   return authed('/dashboard/pm', token)
 }

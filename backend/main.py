@@ -25,6 +25,7 @@ from database import get_db
 from deps import get_current_user, require_role
 from import_cpm import import_cpm_bytes
 from acceptance_service import register_letter, update_acceptance_side, village_name_map
+from acceptance_dashboard import build_acceptance_dashboard
 from action_center import build_action_center
 from drive_test_service import (
     WorkflowError, coordinator_validate, pm_decide, submit_drive_test,
@@ -449,6 +450,18 @@ def action_center(
     role-scoped. Every role can call it; each gets only its own actionable
     cards (Finance/Viewer get none)."""
     return build_action_center(db, current_user)
+
+
+@app.get("/dashboard/acceptance")
+def acceptance_dashboard(
+    technology: str = "all",
+    db: Session = Depends(get_db),
+    _user: User = Depends(get_current_user),
+):
+    """Acceptance (ICT & CRA) analytics: per-side summary partition, per-
+    province sortable tables, site-level rollups, and exact current-Jalali-
+    month approval progress. Any logged-in role may read it."""
+    return build_acceptance_dashboard(db, technology)
 
 
 @app.get("/dashboard/pm")
