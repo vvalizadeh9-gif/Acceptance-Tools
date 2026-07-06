@@ -1,8 +1,25 @@
 import { useEffect, useState } from 'react'
+import { toJalaali } from 'jalaali-js'
 import { listUsers, createUser, updateUser, getSiteFilterOptions, listProvinces, updateProvince } from './api.js'
 import { ROLE_LABELS } from './Layout.jsx'
 
-const ROLES = ['admin', 'project_manager', 'dt_coordinator', 'field_subcontractor', 'regional_manager', 'viewer']
+const ROLES = ['admin', 'project_manager', 'dt_coordinator', 'field_subcontractor', 'regional_manager', 'finance', 'viewer']
+
+// Business priority for the sorted list — Admin at the top, Viewer at the
+// bottom. Anything unexpected sorts after the known roles.
+const ROLE_ORDER = Object.fromEntries(ROLES.map((r, i) => [r, i]))
+
+const JMONTHS = ['Farvardin', 'Ordibehesht', 'Khordad', 'Tir', 'Mordad', 'Shahrivar',
+  'Mehr', 'Aban', 'Azar', 'Dey', 'Bahman', 'Esfand']
+
+// Gregorian ISO timestamp -> Shamsi "12 Tir 1405", matching the dashboards.
+function shamsiDate(iso) {
+  if (!iso) return '—'
+  const d = new Date(iso)
+  if (isNaN(d)) return '—'
+  const { jy, jm, jd } = toJalaali(d.getFullYear(), d.getMonth() + 1, d.getDate())
+  return `${jd} ${JMONTHS[jm - 1]} ${jy}`
+}
 
 function fieldForRole(role) {
   if (role === 'regional_manager') return 'regional_manager_id'
@@ -15,6 +32,8 @@ export default function Users({ token, onLogout }) {
   const [error, setError] = useState('')
   const [showCreate, setShowCreate] = useState(false)
   const [editing, setEditing] = useState(null) // user object being edited
+  const [search, setSearch] = useState('')
+  const [roleFilter, setRoleFilter] = useState('all')
 
   async function load() {
     try {
@@ -26,9 +45,23 @@ export default function Users({ token, onLogout }) {
   }
   useEffect(() => { load() }, [token])
 
+  // Sorted by role priority, then by name — so all the Admins group together,
+  // then PMs, and so on. Search matches name/email; the dropdown filters role.
+  const visible = (users || [])
+    .filter(u => roleFilter === 'all' || u.role === roleFilter)
+    .filter(u => {
+      if (!search) return true
+      const q = search.toLowerCase()
+      return (u.full_name || '').toLowerCase().includes(q) || (u.email || '').toLowerCase().includes(q)
+    })
+    .sort((a, b) =>
+      (ROLE_ORDER[a.role] ?? 99) - (ROLE_ORDER[b.role] ?? 99) ||
+      (a.full_name || '').localeCompare(b.full_name || '')
+    )
+
   return (
     <div>
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-end', marginBottom: 24 }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-end', marginBottom: 20, gap: 16, flexWrap: 'wrap' }}>
         <div>
           <h1 style={{ fontSize: 21, fontWeight: 700 }}>User Management</h1>
           <div style={{ color: 'var(--muted)', fontSize: 13, marginTop: 3 }}>
@@ -40,39 +73,57 @@ export default function Users({ token, onLogout }) {
 
       {error && <div style={errBox}>{error}</div>}
 
+      <div style={{ display: 'flex', gap: 10, alignItems: 'center', marginBottom: 12, flexWrap: 'wrap' }}>
+        <input value={search} onChange={e => setSearch(e.target.value)} placeholder="Search name or email…"
+          style={{ ...input, width: 240, padding: '7px 11px' }} />
+        <select value={roleFilter} onChange={e => setRoleFilter(e.target.value)} style={{ ...input, width: 'auto', padding: '7px 11px' }}>
+          <option value="all">All roles</option>
+          {ROLES.map(r => <option key={r} value={r}>{ROLE_LABELS[r]}</option>)}
+        </select>
+        <span style={{ fontSize: 12, color: 'var(--muted)' }}>
+          {users === null ? '' : `${visible.length} of ${users.length}`}
+        </span>
+      </div>
+
+      {/* The table body scrolls on its own so a long list never pushes the
+          page around — the header row stays pinned. */}
       <div style={{ background: 'var(--panel)', border: '1px solid var(--line)', borderRadius: 12, overflow: 'hidden' }}>
-        <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
-          <thead>
-            <tr style={{ background: 'var(--panel2)' }}>
-              <Th>Name</Th><Th>Email</Th><Th>Role</Th><Th>Status</Th><Th></Th>
-            </tr>
-          </thead>
-          <tbody>
-            {users === null ? (
-              <tr><td colSpan={5} style={{ padding: 20, color: 'var(--muted)' }}>Loading…</td></tr>
-            ) : users.length === 0 ? (
-              <tr><td colSpan={5} style={{ padding: 20, color: 'var(--muted)' }}>No users yet.</td></tr>
-            ) : users.map(u => (
-              <tr key={u.id} style={{ borderTop: '1px solid var(--line)' }}>
-                <td style={td}>{u.full_name}</td>
-                <td style={{ ...td, color: 'var(--muted)' }}>{u.email}</td>
-                <td style={td}>{ROLE_LABELS[u.role] || u.role}</td>
-                <td style={td}>
-                  <span style={{
-                    fontSize: 11.5, padding: '3px 9px', borderRadius: 12,
-                    background: u.is_active ? 'var(--green-soft)' : 'var(--red-soft)',
-                    color: u.is_active ? 'var(--green)' : 'var(--red)',
-                  }}>
-                    {u.is_active ? 'Active' : 'Disabled'}
-                  </span>
-                </td>
-                <td style={{ ...td, textAlign: 'right' }}>
-                  <button onClick={() => setEditing(u)} style={smallBtn}>Edit</button>
-                </td>
+        <div style={{ maxHeight: 'calc(100vh - 250px)', overflowY: 'auto' }}>
+          <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
+            <thead>
+              <tr style={{ background: 'var(--panel2)' }}>
+                <Th>Name</Th><Th>Email</Th><Th>Phone</Th><Th>Role</Th><Th>Created</Th><Th>Status</Th><Th></Th>
               </tr>
-            ))}
-          </tbody>
-        </table>
+            </thead>
+            <tbody>
+              {users === null ? (
+                <tr><td colSpan={7} style={{ padding: 20, color: 'var(--muted)' }}>Loading…</td></tr>
+              ) : visible.length === 0 ? (
+                <tr><td colSpan={7} style={{ padding: 20, color: 'var(--muted)' }}>No matching users.</td></tr>
+              ) : visible.map(u => (
+                <tr key={u.id} style={{ borderTop: '1px solid var(--line)' }}>
+                  <td style={td}>{u.full_name}</td>
+                  <td style={{ ...td, color: 'var(--muted)' }}>{u.email}</td>
+                  <td style={{ ...td, color: 'var(--muted)' }}>{u.phone || '—'}</td>
+                  <td style={td}>{ROLE_LABELS[u.role] || u.role}</td>
+                  <td style={{ ...td, color: 'var(--muted)', whiteSpace: 'nowrap' }}>{shamsiDate(u.created_at)}</td>
+                  <td style={td}>
+                    <span style={{
+                      fontSize: 11.5, padding: '3px 9px', borderRadius: 12,
+                      background: u.is_active ? 'var(--green-soft)' : 'var(--red-soft)',
+                      color: u.is_active ? 'var(--green)' : 'var(--red)',
+                    }}>
+                      {u.is_active ? 'Active' : 'Disabled'}
+                    </span>
+                  </td>
+                  <td style={{ ...td, textAlign: 'right' }}>
+                    <button onClick={() => setEditing(u)} style={smallBtn}>Edit</button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
       </div>
 
       {showCreate && (
@@ -95,7 +146,9 @@ export default function Users({ token, onLogout }) {
 
 function UserForm({ token, mode, user, onClose, onSaved }) {
   const [email, setEmail] = useState(user?.email || '')
-  const [fullName, setFullName] = useState(user?.full_name || '')
+  const [firstName, setFirstName] = useState(user?.first_name || '')
+  const [lastName, setLastName] = useState(user?.last_name || '')
+  const [phone, setPhone] = useState(user?.phone || '')
   const [role, setRole] = useState(user?.role || 'viewer')
   const [regionName, setRegionName] = useState(user?.region_name || '')
   const [regions, setRegions] = useState([])
@@ -129,11 +182,11 @@ function UserForm({ token, mode, user, onClose, onSaved }) {
     try {
       let savedUser
       if (mode === 'create') {
-        const payload = { email, full_name: fullName, role, password }
+        const payload = { email, first_name: firstName, last_name: lastName, phone, role, password }
         if (role === 'regional_manager' && regionName) payload.region_name = regionName
         savedUser = await createUser(token, payload)
       } else {
-        const payload = { full_name: fullName, role, is_active: isActive }
+        const payload = { first_name: firstName, last_name: lastName, phone, role, is_active: isActive }
         if (password) payload.password = password
         if (role === 'regional_manager' && regionName) payload.region_name = regionName
         savedUser = await updateUser(token, user.id, payload)
@@ -190,8 +243,16 @@ function UserForm({ token, mode, user, onClose, onSaved }) {
             <input type="email" value={email} onChange={e => setEmail(e.target.value)} style={input} placeholder="name@mtnirancell.ir" />
           </Field>
         )}
-        <Field label="Full name">
-          <input value={fullName} onChange={e => setFullName(e.target.value)} style={input} />
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+          <Field label="First name">
+            <input value={firstName} onChange={e => setFirstName(e.target.value)} style={input} />
+          </Field>
+          <Field label="Last name">
+            <input value={lastName} onChange={e => setLastName(e.target.value)} style={input} />
+          </Field>
+        </div>
+        <Field label="Phone">
+          <input value={phone} onChange={e => setPhone(e.target.value)} style={input} placeholder="09xxxxxxxxx" />
         </Field>
         <Field label="Role">
           <select value={role} onChange={e => setRole(e.target.value)} style={input}>
@@ -257,7 +318,7 @@ function Field({ label, children }) {
   )
 }
 function Th({ children }) {
-  return <th style={{ textAlign: 'left', padding: '11px 16px', fontSize: 11, color: 'var(--muted2)', textTransform: 'uppercase', letterSpacing: 0.6, fontWeight: 600 }}>{children}</th>
+  return <th style={{ textAlign: 'left', padding: '11px 16px', fontSize: 11, color: 'var(--muted2)', textTransform: 'uppercase', letterSpacing: 0.6, fontWeight: 600, position: 'sticky', top: 0, background: 'var(--panel2)', zIndex: 1 }}>{children}</th>
 }
 
 const td = { padding: '12px 16px' }

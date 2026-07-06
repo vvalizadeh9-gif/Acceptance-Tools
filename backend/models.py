@@ -66,7 +66,15 @@ class User(Base):
 
     id: Mapped[uuid.UUID] = _uuid_pk()
     email: Mapped[str] = mapped_column(String(255), nullable=False, unique=True)
+    # Name is stored split (first/last) — that's what the Admin edits and what
+    # the UI shows in two columns. full_name is kept as the composed
+    # "first last" so every existing join/aggregate that reads full_name
+    # (contractor lists, province RM/coordinator labels, the sidebar) keeps
+    # working untouched; it's derived, never edited directly.
+    first_name: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    last_name: Mapped[str | None] = mapped_column(String(120), nullable=True)
     full_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    phone: Mapped[str | None] = mapped_column(String(40), nullable=True)
     role: Mapped[UserRole] = mapped_column(String(30), nullable=False)
     # Scopes down Regional Manager visibility to one region. Matched by
     # NAME against Site.region_name (same plain-text values, e.g. "R9") —

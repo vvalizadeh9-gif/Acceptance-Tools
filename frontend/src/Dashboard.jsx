@@ -1,9 +1,8 @@
 import { useEffect, useRef, useState } from 'react'
-import { getMe, getSummary, importCpm, resetImportedData } from './api.js'
+import { getMe, importCpm, resetImportedData } from './api.js'
 
 export default function Dashboard({ token, onLogout }) {
   const [me, setMe] = useState(null)
-  const [summary, setSummary] = useState(null)
   const [error, setError] = useState('')
   const [importing, setImporting] = useState(false)
   const [importMsg, setImportMsg] = useState('')
@@ -13,8 +12,7 @@ export default function Dashboard({ token, onLogout }) {
 
   async function loadData() {
     try {
-      const [meData, sumData] = await Promise.all([getMe(token), getSummary(token)])
-      setMe(meData); setSummary(sumData)
+      setMe(await getMe(token))
     } catch (err) {
       if (err.message === 'SESSION_EXPIRED') { onLogout(); return }
       setError(err.message)
@@ -66,12 +64,6 @@ export default function Dashboard({ token, onLogout }) {
 
       {error && <div style={errBox}>{error}</div>}
 
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3,1fr)', gap: 16, marginBottom: 24 }}>
-        <Metric label="Sites" value={summary?.sites} />
-        <Metric label="Total On-Air" value={summary?.total_on_air} sub="Site+Type combos, on-air" />
-        <Metric label="Total Villages" value={summary?.total_villages} sub="Target villages, on-air" />
-      </div>
-
       {me?.role === 'admin' && (
         <div style={{ background: 'var(--panel)', border: '1px solid var(--line)', borderRadius: 12, padding: '18px 20px', marginBottom: 22 }}>
           <h3 style={{ fontSize: 13.5, fontWeight: 700, marginBottom: 6 }}>Import CPM data</h3>
@@ -98,22 +90,13 @@ export default function Dashboard({ token, onLogout }) {
       )}
 
       <div style={infoBox}>
-        The counts above are live from your database. The bottleneck-focused Command Center is a later chunk &mdash;
-        right now we're building out the core features first.
+        Use the Acceptance and Drive Test dashboards for live rollout numbers. This Command Center is the Admin's
+        home for data import and account management.
       </div>
     </div>
   )
 }
 
-function Metric({ label, value, sub }) {
-  return (
-    <div style={{ background: 'var(--panel)', border: '1px solid var(--line)', borderRadius: 12, padding: '16px 18px' }}>
-      <div style={{ fontSize: 11, color: 'var(--muted)', textTransform: 'uppercase', letterSpacing: 0.8 }}>{label}</div>
-      <div style={{ fontSize: 27, fontWeight: 700, marginTop: 6 }}>{value === undefined || value === null ? '...' : value.toLocaleString()}</div>
-      {sub && <div style={{ fontSize: 11, color: 'var(--muted2)', marginTop: 3 }}>{sub}</div>}
-    </div>
-  )
-}
 const errBox = { padding: '12px 16px', borderRadius: 10, marginBottom: 20, background: 'var(--red-soft)', border: '1px solid var(--red)', color: 'var(--red)', fontSize: 13 }
 const infoBox = { padding: '13px 16px', borderRadius: 10, fontSize: 12.5, color: 'var(--muted)', background: 'var(--accent-soft)', border: '1px solid var(--accent-dim)' }
 const dangerBtn = { padding: '9px 16px', borderRadius: 8, border: '1px solid var(--red)', background: 'transparent', color: 'var(--red)', fontWeight: 600, fontSize: 13, cursor: 'pointer' }

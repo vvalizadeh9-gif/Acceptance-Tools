@@ -44,7 +44,9 @@ class ORMBase(BaseModel):
 class UserCreate(BaseModel):
     """Only an Admin can call the route that uses this schema."""
     email: EmailStr
-    full_name: str = Field(min_length=2, max_length=255)
+    first_name: str = Field(min_length=1, max_length=120)
+    last_name: Optional[str] = Field(default=None, max_length=120)
+    phone: Optional[str] = Field(default=None, max_length=40)
     role: UserRole
     region_name: Optional[str] = Field(default=None, max_length=100)
     password: str = Field(min_length=8)
@@ -62,7 +64,10 @@ class UserCreate(BaseModel):
 class UserRead(ORMBase):
     id: uuid.UUID
     email: EmailStr
+    first_name: Optional[str]
+    last_name: Optional[str]
     full_name: str
+    phone: Optional[str]
     role: UserRole
     region_name: Optional[str]
     is_active: bool
@@ -73,7 +78,9 @@ class UserUpdate(BaseModel):
     """Admin edits an existing account. All fields optional — only what's
     sent gets changed. Email is intentionally NOT editable (it's the login
     identity); to change it, deactivate and make a new account."""
-    full_name: Optional[str] = Field(default=None, min_length=2, max_length=255)
+    first_name: Optional[str] = Field(default=None, min_length=1, max_length=120)
+    last_name: Optional[str] = Field(default=None, max_length=120)
+    phone: Optional[str] = Field(default=None, max_length=40)
     role: Optional[UserRole] = None
     region_name: Optional[str] = Field(default=None, max_length=100)
     is_active: Optional[bool] = None

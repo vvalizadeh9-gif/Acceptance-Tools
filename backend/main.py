@@ -328,10 +328,15 @@ def create_user(
     """Admin-only: create an account for any of the 6 roles."""
     if db.query(User).filter(User.email == payload.email).first():
         raise HTTPException(status_code=400, detail="That email is already registered")
+    first = payload.first_name.strip()
+    last = (payload.last_name or "").strip()
     user = User(
         id=uuid.uuid4(),
         email=payload.email,
-        full_name=payload.full_name,
+        first_name=first,
+        last_name=last,
+        full_name=(first + " " + last).strip(),
+        phone=(payload.phone or "").strip() or None,
         role=payload.role,
         region_name=payload.region_name,
         hashed_password=hash_password(payload.password),
@@ -357,8 +362,16 @@ def update_user(
     if user.id == admin.id and payload.is_active is False:
         raise HTTPException(status_code=400, detail="You can't deactivate your own account")
 
-    if payload.full_name is not None:
-        user.full_name = payload.full_name
+    # Name is edited as first/last; recompose full_name from whichever parts
+    # changed, falling back to the current stored values for the untouched one.
+    if payload.first_name is not None or payload.last_name is not None:
+        if payload.first_name is not None:
+            user.first_name = payload.first_name.strip()
+        if payload.last_name is not None:
+            user.last_name = payload.last_name.strip()
+        user.full_name = ((user.first_name or "") + " " + (user.last_name or "")).strip()
+    if payload.phone is not None:
+        user.phone = payload.phone.strip() or None
     if payload.role is not None:
         user.role = payload.role
     if payload.region_name is not None:
