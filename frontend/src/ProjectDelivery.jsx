@@ -1,11 +1,14 @@
 import { useEffect, useState } from 'react'
 import { getProjectDeliveryDashboard } from './api.js'
+import { exportXlsx } from './xlsxExport.js'
+import Chart from './Chart.jsx'
 
 const CAT_LABELS = {
   project_responsibility: 'Project Responsibility', temp_power: 'Temp Power', ms_responsibility: 'MS Responsibility',
   nwg_responsibility: 'NWG Responsibility', other: 'Other',
 }
-const MONTH_LABELS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
+const TABLE_PAGE = 5
+const THEME = { accent: '#2563eb', soft: 'rgba(37,99,235,.10)' }
 
 function fmt(n) { return n === null || n === undefined ? '—' : n.toLocaleString() }
 function ago(iso) {
@@ -16,7 +19,7 @@ function ago(iso) {
 export default function ProjectDelivery({ token, onLogout }) {
   const [d, setD] = useState(null)
   const [error, setError] = useState('')
-  const [popup, setPopup] = useState(null) // {title, rows, exportLabel}
+  const [popup, setPopup] = useState(null) // {title, rows, exportName}
 
   useEffect(() => {
     getProjectDeliveryDashboard(token)
@@ -27,15 +30,15 @@ export default function ProjectDelivery({ token, onLogout }) {
   if (error) return <div style={errBox}>{error}</div>
   if (!d) return <div style={{ color: 'var(--muted)' }}>Loading…</div>
 
+  const isContractor = d.scope.hide_problematic
   const scMax = Math.max(1, ...d.ongoing_by_subcontractor.map(r => r.count))
   const catMax = Math.max(1, ...d.problematic_by_category.map(r => r.count))
   const yearMax = Math.max(1, ...d.yearly_delivery.map(r => r.count))
   const monthMax = Math.max(1, ...d.monthly_this_year.map(r => r.count))
   const scTotalMax = Math.max(1, ...d.by_subcontractor_total.map(r => r.count))
-  const thisMonthLabel = `${MONTH_LABELS[d.current_month.month - 1]} ${d.current_month.year}`
 
-  function openBreakdown(title, rows, exportLabel) {
-    setPopup({ title, rows, exportLabel })
+  function openBreakdown(title, rows, exportName) {
+    setPopup({ title, rows, exportName })
   }
 
   return (
@@ -43,7 +46,9 @@ export default function ProjectDelivery({ token, onLogout }) {
       <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 20, flexWrap: 'wrap' }}>
         <div>
           <h1 style={{ fontSize: 21, fontWeight: 700 }}>Project Delivery</h1>
-          <div style={{ color: 'var(--muted)', fontSize: 13, marginTop: 3 }}>Site-grain delivery progress across the whole project.</div>
+          <div style={{ color: 'var(--muted)', fontSize: 13, marginTop: 3 }}>
+            {isContractor ? 'Your assigned sites only.' : 'Site-grain delivery progress across the whole project.'}
+          </div>
         </div>
         <div style={freshness}><span style={freshDot} />Data as of&nbsp;<strong style={{ color: 'var(--ink)' }}>{ago(d.generated_at)}</strong></div>
       </div>
@@ -61,56 +66,65 @@ export default function ProjectDelivery({ token, onLogout }) {
       {/* Ongoing per subcontractor */}
       <Section title="Ongoing Sites" note="per subcontractor — click a bar for the province breakdown"
                 action={<ExportBtn onClick={() => openBreakdown('Ongoing sites — all subcontractors, by province',
-                  mergeProvinces(d.ongoing_by_subcontractor), 'Ongoing sites (all subcontractors, per province)')} />}>
+                  mergeProvinces(d.ongoing_by_subcontractor), 'ongoing_sites_by_province')} />}>
         <div style={{ padding: '16px 22px' }}>
           {d.ongoing_by_subcontractor.length === 0 ? <Empty text="No ongoing sites right now." /> :
             d.ongoing_by_subcontractor.map(r => (
               <ClickBar key={r.subcontractor} label={r.subcontractor} value={r.count} max={scMax} color="var(--amber)"
                         onClick={() => openBreakdown(`Ongoing — ${r.subcontractor}, by province`, r.by_province,
-                          `Ongoing sites — ${r.subcontractor}`)} />
+                          `ongoing_${r.subcontractor}`)} />
             ))}
         </div>
       </Section>
 
-      {/* Problematic per category */}
-      <Section title="Problematic Sites" note="per category — click a bar for the province breakdown"
-                action={<ExportBtn onClick={() => openBreakdown('Problematic sites — all categories, by province',
-                  mergeProvinces(d.problematic_by_category.map(r => ({ ...r, subcontractor: CAT_LABELS[r.category] || r.category }))),
-                  'Problematic sites (all categories, per province)')} />}>
-        <div style={{ padding: '16px 22px' }}>
-          {d.problematic_by_category.length === 0 ? <Empty text="No problematic sites right now." /> :
-            d.problematic_by_category.map(r => (
-              <ClickBar key={r.category} label={CAT_LABELS[r.category] || r.category} value={r.count} max={catMax} color="var(--red)"
-                        onClick={() => openBreakdown(`Problematic — ${CAT_LABELS[r.category] || r.category}, by province`, r.by_province,
-                          `Problematic sites — ${CAT_LABELS[r.category] || r.category}`)} />
-            ))}
-        </div>
-      </Section>
+      {/* Problematic per category — never shown to Field Subcontractor */}
+      {!isContractor && (
+        <Section title="Problematic Sites" note="per category — click a bar for the province breakdown"
+                  action={<ExportBtn onClick={() => openBreakdown('Problematic sites — all categories, by province',
+                    mergeProvinces(d.problematic_by_category.map(r => ({ ...r, subcontractor: CAT_LABELS[r.category] || r.category }))),
+                    'problematic_sites_by_province')} />}>
+          <div style={{ padding: '16px 22px' }}>
+            {d.problematic_by_category.length === 0 ? <Empty text="No problematic sites right now." /> :
+              d.problematic_by_category.map(r => (
+                <ClickBar key={r.category} label={CAT_LABELS[r.category] || r.category} value={r.count} max={catMax} color="var(--red)"
+                          onClick={() => openBreakdown(`Problematic — ${CAT_LABELS[r.category] || r.category}, by province`, r.by_province,
+                            `problematic_${r.category}`)} />
+              ))}
+          </div>
+        </Section>
+      )}
 
-      {/* Yearly delivery */}
-      <Section title="DT Delivery — Yearly">
+      {/* Per-province progress — one compact sortable table instead of a
+          long scrolling list */}
+      <PerProvinceSection rows={d.per_province} />
+
+      {/* Yearly delivery (Shamsi years) */}
+      <Section title="DT Delivery — Yearly" note="Shamsi years">
         <div style={{ padding: '18px 22px' }}>
           <ColumnChart items={d.yearly_delivery.map(y => ({ label: String(y.year), value: y.count }))} max={yearMax} color="var(--accent)" />
         </div>
       </Section>
 
-      {/* Monthly this year */}
-      <Section title={`DT Delivery — ${d.current_month.year}, by Month`}>
+      {/* Monthly this year + current-month progress (Shamsi) */}
+      <Section title={`DT Delivery — ${d.current_month.year}, by Month`} note="Shamsi months">
         <div style={{ padding: '16px 22px 4px' }}>
-          <div style={{ display: 'flex', gap: 22, alignItems: 'baseline', marginBottom: 16 }}>
-            <div>
-              <div style={{ fontSize: 32, fontWeight: 800 }}>{fmt(d.current_month.count)}</div>
-              <div style={{ fontSize: 12, color: 'var(--muted)' }}>{thisMonthLabel} so far</div>
-            </div>
-            {d.current_month.delta !== 0 && (
-              <div style={{ fontSize: 12, fontWeight: 600, color: d.current_month.delta > 0 ? 'var(--green)' : 'var(--red)' }}>
-                {d.current_month.delta > 0 ? '▲' : '▼'} {Math.abs(d.current_month.delta)} vs last month
+          <div style={{ background: THEME.soft, borderRadius: 10, padding: '10px 12px', marginBottom: 16 }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline' }}>
+              <div>
+                <div style={{ fontSize: 11, color: 'var(--muted)' }}>Current month ({d.current_month.period_label})</div>
+                <div style={{ fontSize: 22, fontWeight: 700 }}>
+                  {fmt(d.current_month.count)}
+                  <span style={{ fontSize: 12, fontWeight: 600, marginLeft: 8, color: deltaColor(d.current_month.delta) }}>
+                    {deltaText(d.current_month)}
+                  </span>
+                </div>
               </div>
-            )}
+            </div>
+            <Chart option={lineOption(d.current_month)} height={90} />
           </div>
         </div>
         <div style={{ padding: '0 22px 18px' }}>
-          <ColumnChart items={d.monthly_this_year.map(m => ({ label: MONTH_LABELS[m.month - 1], value: m.count }))} max={monthMax} color="var(--accent)" />
+          <ColumnChart items={d.monthly_this_year.map(m => ({ label: m.month_label, value: m.count }))} max={monthMax} color="var(--accent)" />
         </div>
         <div style={{ padding: '0 22px 16px' }}>
           <div style={footnote}>
@@ -141,7 +155,90 @@ function mergeProvinces(groups) {
   return Object.entries(totals).map(([province, count]) => ({ province, count })).sort((a, b) => b.count - a.count)
 }
 
-function BreakdownModal({ title, rows, exportLabel, onClose }) {
+function lineOption(cm) {
+  const data = cm.daily_cumulative || []
+  return {
+    grid: { left: 4, right: 8, top: 8, bottom: 4, containLabel: false },
+    xAxis: { type: 'category', show: false, data: data.map((_, i) => i + 1) },
+    yAxis: { type: 'value', show: false },
+    tooltip: { trigger: 'axis', formatter: p => `Day ${p[0].dataIndex + 1}: ${p[0].data} delivered` },
+    series: [{
+      type: 'line', data, smooth: true, symbol: 'none',
+      lineStyle: { color: THEME.accent, width: 2 },
+      areaStyle: { color: THEME.soft },
+    }],
+  }
+}
+function deltaText(cm) {
+  if (cm.delta_pct == null) return `vs ${fmt(cm.last_month)} last month`
+  const sign = cm.delta >= 0 ? '↑' : '↓'
+  return `${sign} ${Math.abs(cm.delta_pct)}% vs last month`
+}
+function deltaColor(delta) { return delta > 0 ? 'var(--green)' : delta < 0 ? 'var(--red)' : 'var(--muted)' }
+
+function PerProvinceSection({ rows }) {
+  const [expanded, setExpanded] = useState(false)
+  const [sortKey, setSortKey] = useState('on_air')
+  const [search, setSearch] = useState('')
+
+  let filtered = rows.filter(r => !search || r.province.toLowerCase().includes(search.toLowerCase()))
+  filtered = [...filtered].sort((a, b) => (b[sortKey] ?? 0) - (a[sortKey] ?? 0) || a.province.localeCompare(b.province))
+  const shown = expanded ? filtered : filtered.slice(0, TABLE_PAGE)
+
+  function doExport() {
+    exportXlsx('project_delivery_per_province.xlsx', [{
+      name: 'Per Province',
+      rows: [
+        ['Province', 'On-Air', 'DT Done', 'Remained', 'DT %'],
+        ...filtered.map(r => [r.province, r.on_air, r.dt_done, r.remained, r.dt_pct]),
+      ],
+    }])
+  }
+
+  return (
+    <Section title="Progress per Province" note="click a column to sort" action={<ExportBtn onClick={doExport} />}>
+      <div style={{ padding: '14px 22px 8px', display: 'flex', justifyContent: 'flex-end' }}>
+        <input value={search} onChange={e => setSearch(e.target.value)} placeholder="Search province…"
+               style={{ ...input, fontSize: 12, padding: '5px 9px', width: 200 }} />
+      </div>
+      <div style={{ overflowX: 'auto' }}>
+        <table style={table}>
+          <thead>
+            <tr style={{ background: 'var(--panel2)' }}>
+              <Th>Province</Th>
+              <Th align="right" onClick={() => setSortKey('on_air')} active={sortKey === 'on_air'}>On-Air</Th>
+              <Th align="right" onClick={() => setSortKey('dt_done')} active={sortKey === 'dt_done'}>DT Done</Th>
+              <Th align="right" onClick={() => setSortKey('remained')} active={sortKey === 'remained'}>Remained</Th>
+              <Th align="right" onClick={() => setSortKey('dt_pct')} active={sortKey === 'dt_pct'}>DT %</Th>
+            </tr>
+          </thead>
+          <tbody>
+            {shown.length === 0 ? (
+              <tr><td colSpan={5} style={{ ...td, color: 'var(--muted)' }}>No provinces.</td></tr>
+            ) : shown.map(r => (
+              <tr key={r.province} style={{ borderTop: '1px solid var(--line-soft)' }}>
+                <td style={td}>{r.province}</td>
+                <td style={{ ...td, textAlign: 'right' }}>{fmt(r.on_air)}</td>
+                <td style={{ ...td, textAlign: 'right' }}>{fmt(r.dt_done)}</td>
+                <td style={{ ...td, textAlign: 'right' }}>{fmt(r.remained)}</td>
+                <td style={{ ...td, textAlign: 'right' }}>{r.dt_pct}%</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      {filtered.length > TABLE_PAGE && (
+        <div style={{ padding: '4px 22px 16px' }}>
+          <button onClick={() => setExpanded(x => !x)} style={linkBtn}>
+            {expanded ? 'Show top 5' : `View all provinces (${filtered.length})`}
+          </button>
+        </div>
+      )}
+    </Section>
+  )
+}
+
+function BreakdownModal({ title, rows, exportName, onClose }) {
   return (
     <div style={overlay} onClick={onClose}>
       <div style={modal} onClick={e => e.stopPropagation()}>
@@ -151,7 +248,7 @@ function BreakdownModal({ title, rows, exportLabel, onClose }) {
         </div>
         <div style={{ maxHeight: 360, overflowY: 'auto' }}>
           <table style={table}>
-            <thead><tr style={{ background: 'var(--panel2)' }}><Th>Province</Th><Th right>Sites</Th></tr></thead>
+            <thead><tr style={{ background: 'var(--panel2)' }}><Th>Province</Th><Th align="right">Sites</Th></tr></thead>
             <tbody>
               {rows.length === 0 ? (
                 <tr><td colSpan={2} style={{ ...td, color: 'var(--muted)' }}>No data.</td></tr>
@@ -165,7 +262,9 @@ function BreakdownModal({ title, rows, exportLabel, onClose }) {
           </table>
         </div>
         <div style={{ padding: '12px 20px', borderTop: '1px solid var(--line)', display: 'flex', justifyContent: 'flex-end' }}>
-          <ExportBtn label="Export Excel" onClick={() => alert('Generating Excel: ' + exportLabel)} />
+          <ExportBtn label="Export Excel" onClick={() => exportXlsx(`${exportName}.xlsx`, [{
+            name: 'Breakdown', rows: [['Province', 'Sites'], ...rows.map(r => [r.province, r.count])],
+          }])} />
         </div>
       </div>
     </div>
@@ -261,8 +360,14 @@ function ExportBtn({ label, onClick }) {
   return <button style={exportBtn} onClick={onClick}>↓ {label || 'Export Excel'}</button>
 }
 
-function Th({ children, right }) {
-  return <th style={{ textAlign: right ? 'right' : 'left', padding: '9px 20px', fontSize: 10.5, color: 'var(--muted2)', textTransform: 'uppercase', letterSpacing: .6, fontWeight: 600 }}>{children}</th>
+function Th({ children, align, onClick, active }) {
+  return (
+    <th onClick={onClick}
+      style={{ textAlign: align || 'left', padding: '9px 20px', fontSize: 10.5, color: active ? 'var(--accent)' : 'var(--muted2)',
+        textTransform: 'uppercase', letterSpacing: 0.6, fontWeight: 600, cursor: onClick ? 'pointer' : 'default', whiteSpace: 'nowrap' }}>
+      {children}{onClick && <span style={{ marginLeft: 2 }}>{active ? '▾' : '⇅'}</span>}
+    </th>
+  )
 }
 
 const cards = { display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(220px,1fr))', gap: 14 }
@@ -270,6 +375,8 @@ const card = { background: 'var(--panel)', border: '1px solid var(--line)', bord
 const cardLabel = { fontSize: 11, color: 'var(--muted)', textTransform: 'uppercase', letterSpacing: .7 }
 const table = { width: '100%', borderCollapse: 'collapse', fontSize: 12.5 }
 const td = { padding: '9px 20px' }
+const input = { padding: '7px 11px', borderRadius: 8, border: '1px solid var(--line)', background: 'var(--panel2)', color: 'var(--ink)', outline: 'none', fontSize: 12.5 }
+const linkBtn = { background: 'none', border: 'none', color: 'var(--accent)', fontSize: 12, cursor: 'pointer', padding: 0 }
 const clickBarWrap = { cursor: 'pointer', padding: '5px 8px', borderRadius: 8, margin: '-5px -8px -5px -8px', marginBottom: 4 }
 const exportBtn = { fontSize: 11.5, color: 'var(--muted)', background: 'transparent', border: '1px solid var(--line)', borderRadius: 7, padding: '5px 11px', cursor: 'pointer', fontWeight: 600 }
 const footnote = { fontSize: 11.5, color: 'var(--muted2)', lineHeight: 1.6, background: 'var(--panel2)', borderRadius: 8, padding: '10px 14px' }

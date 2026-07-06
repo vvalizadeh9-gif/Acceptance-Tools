@@ -490,13 +490,15 @@ def pm_dashboard(
 @app.get("/dashboard/delivery")
 def project_delivery_dashboard(
     db: Session = Depends(get_db),
-    _user: User = Depends(require_role("admin", "project_manager")),
+    user: User = Depends(require_role("admin", "project_manager", "dt_coordinator", "field_subcontractor")),
 ):
     """Project Delivery tab: on-air/DT/remained KPIs with %/trend, ongoing
     and problematic breakdowns (per subcontractor / per category, each with
-    a per-province drill-down), and yearly/monthly/per-subcontractor DT
-    delivery charts. Admin + PM only."""
-    return build_project_delivery_dashboard(db)
+    a per-province drill-down), per-province progress, and yearly/monthly/
+    per-subcontractor DT delivery charts (Shamsi). Admin/PM/Coordinator see
+    the whole project; Field Subcontractor is scoped to their own assigned
+    sites and never gets the Problematic Sites breakdown."""
+    return build_project_delivery_dashboard(db, user)
 
 
 @app.get("/dashboard/coordinator")

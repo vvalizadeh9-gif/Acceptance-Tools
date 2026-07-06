@@ -24,7 +24,7 @@ export default function Layout({ me, onLogout, active, onNavigate, children }) {
   const nav = [
     { key: 'command', label: 'Command Center', roles: 'all' },
     { key: 'pm', label: 'PM Dashboard', roles: ['admin', 'project_manager'] },
-    { key: 'delivery', label: 'Project Delivery', roles: ['admin', 'project_manager'] },
+    { key: 'delivery', label: 'Project Delivery', roles: ['admin', 'project_manager', 'dt_coordinator', 'field_subcontractor'] },
     { key: 'coordinator', label: 'My Area', roles: ['dt_coordinator'] },
     { key: 'contractor', label: 'My Work', roles: ['field_subcontractor'] },
     { key: 'regional', label: 'My Region', roles: ['regional_manager'] },

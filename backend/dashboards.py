@@ -12,11 +12,18 @@ Definitions (shared across roles):
   * "Final" is the stored cached flag (all requested techs approved).
 """
 
-from datetime import datetime, timedelta, timezone
+import uuid
+from collections import defaultdict
+from datetime import datetime, timezone
 
-from sqlalchemy import Integer, and_, extract, func, or_, select
+from sqlalchemy import and_, case, func, or_, select, true
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from jalali import (
+    MONTHS_EN, current_period, days_in_period, jalali_day, jalali_period,
+    period_label, previous_period,
+)
 from models import (
     ContractorAssignment, MonthlyMetricSnapshot, Province, Site, User, Village,
     VillageAcceptance, WorkItem,
@@ -40,18 +47,47 @@ def _month_start() -> datetime:
     return now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
 
 
-def _kpi_delta(db: Session, metric: str) -> int | None:
-    """live count minus this month's opening snapshot (None if no baseline)."""
-    period = datetime.now(timezone.utc).strftime("%Y-%m")
-    base = db.execute(
-        select(MonthlyMetricSnapshot.value).where(
-            MonthlyMetricSnapshot.period == period,
-            MonthlyMetricSnapshot.scope_type == "global",
-            MonthlyMetricSnapshot.scope_key == "",
+def _kpi_delta(db: Session, metric: str, live: int, scope_type: str = "global", scope_key: str = "") -> int | None:
+    """Self-healing month-over-month delta (Jalali months): live minus last
+    period's opening snapshot, or None if that baseline doesn't exist yet.
+
+    There is no cron populating MonthlyMetricSnapshot, so instead of relying
+    on one, this captures THIS period's opening value from `live` the first
+    time anyone asks during that period -- purely so NEXT period has a
+    baseline to diff against. The very first period after this starts running
+    still shows "no baseline yet" (nothing to compare to), exactly like the
+    model's docstring already promises; every period after that is self-
+    sufficient with no scheduler required."""
+    cur = current_period()
+    prev = previous_period(cur)
+
+    exists = db.execute(
+        select(MonthlyMetricSnapshot.id).where(
+            MonthlyMetricSnapshot.period == cur,
+            MonthlyMetricSnapshot.scope_type == scope_type,
+            MonthlyMetricSnapshot.scope_key == scope_key,
             MonthlyMetricSnapshot.metric == metric,
         )
     ).scalar()
-    return base  # caller subtracts; kept separate so we return None cleanly
+    if exists is None:
+        db.add(MonthlyMetricSnapshot(
+            id=uuid.uuid4(), period=cur, scope_type=scope_type, scope_key=scope_key,
+            metric=metric, value=live,
+        ))
+        try:
+            db.commit()
+        except IntegrityError:
+            db.rollback()  # a concurrent request already captured this period
+
+    base = db.execute(
+        select(MonthlyMetricSnapshot.value).where(
+            MonthlyMetricSnapshot.period == prev,
+            MonthlyMetricSnapshot.scope_type == scope_type,
+            MonthlyMetricSnapshot.scope_key == scope_key,
+            MonthlyMetricSnapshot.metric == metric,
+        )
+    ).scalar()
+    return None if base is None else live - base
 
 
 def _villages_on_sites(db: Session, site_filter) -> int:
@@ -83,8 +119,7 @@ def build_pm_dashboard(db: Session) -> dict:
     remained_villages = _villages_on_sites(db, WorkItem.dt_status.in_([_ONGOING, _PROBLEMATIC]))
 
     def delta(metric, live):
-        base = _kpi_delta(db, metric)
-        return None if base is None else live - base
+        return _kpi_delta(db, metric, live)
 
     # --- Section 1: on-air vs DT gap ---
     ongoing = db.execute(select(func.count(WorkItem.id)).where(WorkItem.dt_status == _ONGOING)).scalar() or 0
@@ -415,23 +450,38 @@ def build_contractor_dashboard(db: Session, user: User) -> dict:
 #     directly, so it IS the full, accurate count.
 # ===========================================================================
 
-def build_project_delivery_dashboard(db: Session) -> dict:
+def build_project_delivery_dashboard(db: Session, user: User) -> dict:
     now = datetime.now(timezone.utc)
-    today = now.date()
+
+    # Field Subcontractor sees only their own assigned sites (and loses the
+    # Problematic Sites breakdown entirely -- not their concern). Admin/PM/
+    # Coordinator see the whole project for now; Coordinator gets scoped to
+    # their provinces in a later pass, per the owner's "modify later" note.
+    is_contractor = user.role == "field_subcontractor"
+    scope_type = "contractor" if is_contractor else "global"
+    scope_key = str(user.id) if is_contractor else ""
+    if is_contractor:
+        scope_ids = _contractor_scope_site_ids(db, user.id).scalar_subquery()
+        site_scope = WorkItem.site_id.in_(scope_ids)
+    else:
+        site_scope = true()
 
     # Same grain as the KPI counts themselves (Work Item = Site+SiteType,
     # "Index 1") — using distinct Site count here would mismatch grain for
     # any site with 2+ site types and could push a percentage over 100%.
-    total_work_items = db.execute(select(func.count(WorkItem.id))).scalar() or 0
-    on_air_sites = db.execute(select(func.count(WorkItem.id)).where(WorkItem.is_on_air.is_(True))).scalar() or 0
-    dt_done_sites = db.execute(select(func.count(WorkItem.id)).where(WorkItem.dt_status == _DONE)).scalar() or 0
+    total_work_items = db.execute(select(func.count(WorkItem.id)).where(site_scope)).scalar() or 0
+    on_air_sites = db.execute(
+        select(func.count(WorkItem.id)).where(site_scope, WorkItem.is_on_air.is_(True))
+    ).scalar() or 0
+    dt_done_sites = db.execute(
+        select(func.count(WorkItem.id)).where(site_scope, WorkItem.dt_status == _DONE)
+    ).scalar() or 0
     remained_sites = db.execute(
-        select(func.count(WorkItem.id)).where(WorkItem.dt_status.in_([_ONGOING, _PROBLEMATIC]))
+        select(func.count(WorkItem.id)).where(site_scope, WorkItem.dt_status.in_([_ONGOING, _PROBLEMATIC]))
     ).scalar() or 0
 
     def delta(metric, live):
-        base = _kpi_delta(db, metric)
-        return None if base is None else live - base
+        return _kpi_delta(db, metric, live, scope_type=scope_type, scope_key=scope_key)
 
     # --- Ongoing sites per subcontractor, each with a per-province breakdown ---
     # Built once, reused in SELECT + GROUP BY — see the identical note in
@@ -440,7 +490,7 @@ def build_project_delivery_dashboard(db: Session) -> dict:
     ongoing_rows = db.execute(
         select(sc_name, Site.province_name, func.count(WorkItem.id))
         .join(Site, Site.id == WorkItem.site_id)
-        .where(WorkItem.dt_status == _ONGOING)
+        .where(site_scope, WorkItem.dt_status == _ONGOING)
         .group_by(sc_name, Site.province_name)
     ).all()
     by_sc: dict[str, dict] = {}
@@ -452,67 +502,106 @@ def build_project_delivery_dashboard(db: Session) -> dict:
     for entry in ongoing_by_subcontractor:
         entry["by_province"].sort(key=lambda r: r["count"], reverse=True)
 
-    # --- Problematic sites per category, each with a per-province breakdown ---
-    prob_rows = db.execute(
-        select(WorkItem.dt_problematic_category, Site.province_name, func.count(WorkItem.id))
+    # --- Problematic sites per category -- Subcontractor doesn't get this
+    # breakdown at all, not just an empty one (owner's call). ---
+    problematic_by_category = []
+    if not is_contractor:
+        prob_rows = db.execute(
+            select(WorkItem.dt_problematic_category, Site.province_name, func.count(WorkItem.id))
+            .join(Site, Site.id == WorkItem.site_id)
+            .where(site_scope, WorkItem.dt_status == _PROBLEMATIC, WorkItem.dt_problematic_category.isnot(None))
+            .group_by(WorkItem.dt_problematic_category, Site.province_name)
+        ).all()
+        by_cat: dict[str, dict] = {}
+        for cat, prov, cnt in prob_rows:
+            entry = by_cat.setdefault(cat, {"category": cat, "count": 0, "by_province": []})
+            entry["count"] += cnt
+            entry["by_province"].append({"province": prov, "count": cnt})
+        problematic_by_category = sorted(by_cat.values(), key=lambda r: r["count"], reverse=True)
+        for entry in problematic_by_category:
+            entry["by_province"].sort(key=lambda r: r["count"], reverse=True)
+
+    # --- Per-province progress: one compact, sortable row per province
+    # instead of a long scrolling list -- same table pattern as the
+    # Acceptance dashboard (top-5 + "view all" lives in the frontend). ---
+    prov_rows = db.execute(
+        select(
+            Site.province_name,
+            func.count(WorkItem.id),
+            func.sum(case((WorkItem.is_on_air.is_(True), 1), else_=0)),
+            func.sum(case((WorkItem.dt_status == _DONE, 1), else_=0)),
+            func.sum(case((WorkItem.dt_status.in_([_ONGOING, _PROBLEMATIC]), 1), else_=0)),
+        )
         .join(Site, Site.id == WorkItem.site_id)
-        .where(WorkItem.dt_status == _PROBLEMATIC, WorkItem.dt_problematic_category.isnot(None))
-        .group_by(WorkItem.dt_problematic_category, Site.province_name)
+        .where(site_scope)
+        .group_by(Site.province_name)
     ).all()
-    by_cat: dict[str, dict] = {}
-    for cat, prov, cnt in prob_rows:
-        entry = by_cat.setdefault(cat, {"category": cat, "count": 0, "by_province": []})
-        entry["count"] += cnt
-        entry["by_province"].append({"province": prov, "count": cnt})
-    problematic_by_category = sorted(by_cat.values(), key=lambda r: r["count"], reverse=True)
-    for entry in problematic_by_category:
-        entry["by_province"].sort(key=lambda r: r["count"], reverse=True)
+    per_province = [
+        {
+            "province": prov or "Unknown", "total": total,
+            "on_air": int(on_air or 0), "dt_done": int(dt_done or 0), "remained": int(remained_n or 0),
+            "dt_pct": _pct(int(dt_done or 0), int(on_air or 0)),
+        }
+        for prov, total, on_air, dt_done, remained_n in prov_rows
+    ]
+    per_province.sort(key=lambda r: r["on_air"], reverse=True)
 
-    # --- Yearly delivery chart (only work items with a recorded dt_date) ---
-    dated_total = db.execute(select(func.count(WorkItem.id)).where(WorkItem.dt_date.isnot(None))).scalar() or 0
-    yearly = db.execute(
-        select(extract("year", WorkItem.dt_date).label("y"), func.count(WorkItem.id))
-        .where(WorkItem.dt_date.isnot(None))
-        .group_by("y").order_by("y")
-    ).all()
-    yearly_delivery = [{"year": int(y), "count": c} for y, c in yearly]
+    # --- Yearly / monthly DT-delivery charts, bucketed by JALALI period.
+    # dt_date is sparse historical data (see module note above), so this is
+    # done in Python from the small set of dated rows -- same approach as
+    # the daily-cumulative line in acceptance_dashboard.py. ---
+    dated_rows = db.execute(
+        select(WorkItem.dt_date).where(site_scope, WorkItem.dt_date.isnot(None))
+    ).scalars().all()
+    dated_total = len(dated_rows)
 
-    # --- Monthly delivery, current calendar year (12 months, zero-filled) ---
-    monthly = dict(db.execute(
-        select(extract("month", WorkItem.dt_date).label("m"), func.count(WorkItem.id))
-        .where(WorkItem.dt_date.isnot(None), extract("year", WorkItem.dt_date) == today.year)
-        .group_by("m")
-    ).all())
-    monthly_this_year = [{"month": m, "count": int(monthly.get(m) or monthly.get(float(m), 0))} for m in range(1, 13)]
+    cur = current_period()
+    prev = previous_period(cur)
+    cur_year = int(cur.split("-")[0])
+    year_counts: dict[int, int] = defaultdict(int)
+    month_counts = {m: 0 for m in range(1, 13)}
+    dt_month = {"cur": 0, "prev": 0, "daily": [0] * (days_in_period(cur) + 1)}
 
-    # --- Current month KPI + vs last month (both derived directly from
-    # dt_date, no snapshot table needed — these are dated historical events). ---
-    this_month_count = db.execute(
-        select(func.count(WorkItem.id)).where(
-            WorkItem.dt_date.isnot(None),
-            extract("year", WorkItem.dt_date) == today.year,
-            extract("month", WorkItem.dt_date) == today.month,
-        )
-    ).scalar() or 0
-    last_month_date = today.replace(day=1) - timedelta(days=1)
-    last_month_count = db.execute(
-        select(func.count(WorkItem.id)).where(
-            WorkItem.dt_date.isnot(None),
-            extract("year", WorkItem.dt_date) == last_month_date.year,
-            extract("month", WorkItem.dt_date) == last_month_date.month,
-        )
-    ).scalar() or 0
+    for d in dated_rows:
+        per = jalali_period(d)
+        y, m = (int(x) for x in per.split("-"))
+        year_counts[y] += 1
+        if y == cur_year:
+            month_counts[m] += 1
+        if per == cur:
+            dt_month["cur"] += 1
+            day = jalali_day(d)
+            if day and day < len(dt_month["daily"]):
+                dt_month["daily"][day] += 1
+        elif per == prev:
+            dt_month["prev"] += 1
+
+    yearly_delivery = [{"year": y, "count": c} for y, c in sorted(year_counts.items())]
+    monthly_this_year = [{"month": m, "month_label": MONTHS_EN[m - 1], "count": month_counts[m]} for m in range(1, 13)]
+
+    month_delta = dt_month["cur"] - dt_month["prev"]
+    month_delta_pct = round(month_delta * 100.0 / dt_month["prev"], 1) if dt_month["prev"] else None
+    cum, running = [], 0
+    for i in range(1, len(dt_month["daily"])):
+        running += dt_month["daily"][i]
+        cum.append(running)
+    current_month = {
+        "period": cur, "period_label": period_label(cur), "year": cur_year,
+        "count": dt_month["cur"], "last_month": dt_month["prev"],
+        "delta": month_delta, "delta_pct": month_delta_pct, "daily_cumulative": cum,
+    }
 
     # --- Per-subcontractor total delivered (no date needed -> exact) ---
     by_sc_total = db.execute(
         select(sc_name, func.count(WorkItem.id))
-        .where(WorkItem.dt_status == _DONE)
+        .where(site_scope, WorkItem.dt_status == _DONE)
         .group_by(sc_name)
         .order_by(func.count(WorkItem.id).desc())
     ).all()
 
     return {
         "generated_at": now.isoformat(),
+        "scope": {"role": user.role, "hide_problematic": is_contractor},
         "kpis": {
             "on_air": {"count": on_air_sites, "pct_of_total": _pct(on_air_sites, total_work_items),
                        "delta": delta("on_air", on_air_sites)},
@@ -526,7 +615,7 @@ def build_project_delivery_dashboard(db: Session) -> dict:
         "dt_delivery_dated_count": dated_total,
         "yearly_delivery": yearly_delivery,
         "monthly_this_year": monthly_this_year,
-        "current_month": {"year": today.year, "month": today.month, "count": this_month_count,
-                          "delta": this_month_count - last_month_count},
+        "current_month": current_month,
+        "per_province": per_province,
         "by_subcontractor_total": [{"subcontractor": sc, "count": c} for sc, c in by_sc_total],
     }
